@@ -133,8 +133,20 @@ final class TerminalView: NSView {
         screen.frame = bounds
         let size = screen.bounds.size
         header.frame = NSRect(x: 0, y: size.height - 28, width: size.width, height: 28)
-        filename.frame = NSRect(x: 84, y: 4, width: max(100, size.width - 272), height: 21)
-        position.frame = NSRect(x: size.width - 178, y: 4, width: 170, height: 21)
+        let rowCenter: CGFloat
+        if let button = window?.standardWindowButton(.closeButton) {
+            rowCenter = header.convert(button.bounds, from: button).midY
+        } else {
+            rowCenter = header.bounds.midY
+        }
+        let labelHeight = filename.intrinsicContentSize.height
+        let labelY = rowCenter - labelHeight / 2
+        filename.frame = NSRect(
+            x: 84, y: labelY, width: max(100, size.width - 272), height: labelHeight
+        )
+        position.frame = NSRect(
+            x: size.width - 178, y: labelY, width: 170, height: labelHeight
+        )
         scroll.frame = NSRect(x: 0, y: 22, width: size.width, height: size.height - 50)
         textView.minSize = NSSize(width: 0, height: scroll.contentSize.height)
         textView.setFrameSize(NSSize(

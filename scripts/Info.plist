@@ -5,9 +5,10 @@
 <key>CFBundleIdentifier</key><string>ca.bencho.amber-notepad</string>
 <key>CFBundleName</key><string>Amber</string>
 <key>CFBundleDisplayName</key><string>Amber</string>
+<key>CFBundleIconFile</key><string>Amber.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleVersion</key><string>2</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>

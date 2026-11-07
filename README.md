@@ -71,3 +71,22 @@ Toggle **Edit > Vim Keybindings** for conventional text editing.
 
 This is a focused Vim-style subset, not an embedded Vim runtime. There are no ex commands,
 macros, plugins, or vimrc. Standard Mac shortcuts remain available in every mode.
+
+## Launch with a keyboard shortcut
+
+Install `Amber.app` in Applications. In Apple's Shortcuts app, create a shortcut named
+**Open Amber**, add **Open App**, and select Amber. In Shortcut Details, choose
+**Add Keyboard Shortcut** and record a combination, such as Control-Option-Command-A.
+Click elsewhere to finish recording it. This launches Amber even when it is closed.
+
+## App icon
+
+`Assets/Amber.icns` contains the native icon sizes; `Assets/Amber.png` is the preview.
+The tile uses an 824-pixel face within a 1024-pixel canvas to match neighboring Dock icons.
+Regenerate the assets with:
+
+```sh
+swift scripts/draw-icon.swift /tmp/Amber.iconset
+iconutil --convert icns --output Assets/Amber.icns /tmp/Amber.iconset
+cp /tmp/Amber.iconset/icon_512x512@2x.png Assets/Amber.png
+```

@@ -31,3 +31,20 @@ continues to exclude the footer. Only TerminalView.swift and this verification n
 PASS: release build and signature; all 17 tests, including long-document resizing.
 PASS: running native app inspected with edge-to-edge header/editor and compact text inset.
 Installation is paused at the user's request; the updated bundle is build/Amber.app.
+
+## Icon, header alignment, and launch shortcut follow-up
+
+The icon uses a full amber tile with a dark terminal prompt and block cursor. After the
+user compared its Dock size to neighboring apps, its face was reduced to 824 pixels within
+the 1024-pixel canvas. It has the transparent outer safe area needed to match those tiles,
+without additional padding inside the face. The build bundles all native icon sizes.
+Amber explicitly loads the bundled icon at launch; the user confirmed it now appears.
+
+Header labels now use their intrinsic 15-point height and align to the actual native
+window-control center. Native component measurement changed from label706.5/button704.0
+to label704.0/button704.0. Body/header/footer fonts are unchanged.
+
+PASS: release build, local signature, and 17 existing tests. The image renderer ran at all
+10 native sizes and produced a valid ICNS container. Installed in /Applications/Amber.app.
+PASS: user physically confirmed Control-Option-Command-A opens Amber through the native
+Open Amber shortcut. This OS-level shortcut is configured locally, not embedded in the app.
