@@ -37,3 +37,11 @@ script produces build/Amber Notepad.app, signed locally. No external packages.
 Only Sources/, Tests/, scripts/, docs/, Package.swift, README.md, .gitignore, and app bundle
 metadata. Three runtime parts: document storage, editor UI, application lifecycle.
 PASS requires build, real file tests, rendered UI, and single-document lifecycle checks.
+
+## Accepted changes during implementation
+User requested smaller type: editor 12pt after the second correction, header 12pt; retain amber palette.
+User requested Vim keybindings: Normal/Insert/Visual, common navigation and editing,
+mode indicator, Edit menu toggle. Native app menus/shortcuts remain available.
+This is a Vim-style subset, no runtime/plugins/configuration/ex commands.
+
+Final display name: Amber. Bundle: build/Amber.app. Keep internal identity/recovery path stable.
