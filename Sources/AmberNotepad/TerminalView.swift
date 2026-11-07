@@ -46,10 +46,7 @@ final class TerminalView: NSView {
             .cgColor
         screen.wantsLayer = true
         screen.layer?.backgroundColor = Phosphor.screen.cgColor
-        screen.layer?.cornerRadius = 12
         screen.layer?.masksToBounds = true
-        screen.layer?.borderWidth = 1
-        screen.layer?.borderColor = Phosphor.amber.withAlphaComponent(0.10).cgColor
         addSubview(screen)
         header.wantsLayer = true
         header.layer?.backgroundColor = Phosphor.bar.cgColor
@@ -94,7 +91,7 @@ final class TerminalView: NSView {
         textView.backgroundColor = .clear
         textView.drawsBackground = false
         textView.insertionPointColor = Phosphor.amber
-        textView.textContainerInset = NSSize(width: 22, height: 22)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
@@ -103,6 +100,7 @@ final class TerminalView: NSView {
             width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude
         )
         textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.lineFragmentPadding = 0
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         paragraph.defaultTabInterval = Phosphor.font.maximumAdvancement.width * 4
@@ -132,19 +130,19 @@ final class TerminalView: NSView {
 
     override func layout() {
         super.layout()
-        screen.frame = NSRect(x: 16, y: 16, width: bounds.width - 32, height: bounds.height - 52)
+        screen.frame = bounds
         let size = screen.bounds.size
-        header.frame = NSRect(x: 0, y: size.height - 36, width: size.width, height: 36)
-        filename.frame = NSRect(x: 20, y: 8, width: max(100, size.width - 220), height: 21)
-        position.frame = NSRect(x: size.width - 190, y: 8, width: 170, height: 21)
-        scroll.frame = NSRect(x: 0, y: 30, width: size.width, height: size.height - 66)
+        header.frame = NSRect(x: 0, y: size.height - 28, width: size.width, height: 28)
+        filename.frame = NSRect(x: 84, y: 4, width: max(100, size.width - 272), height: 21)
+        position.frame = NSRect(x: size.width - 178, y: 4, width: 170, height: 21)
+        scroll.frame = NSRect(x: 0, y: 22, width: size.width, height: size.height - 50)
         textView.minSize = NSSize(width: 0, height: scroll.contentSize.height)
         textView.setFrameSize(NSSize(
             width: scroll.contentSize.width,
             height: max(textView.frame.height, scroll.contentSize.height)
         ))
         textView.sizeToFit()
-        status.frame = NSRect(x: 22, y: 9, width: size.width - 44, height: 15)
-        texture.frame = NSRect(x: 0, y: 30, width: size.width, height: size.height - 66)
+        status.frame = NSRect(x: 8, y: 4, width: size.width - 16, height: 15)
+        texture.frame = scroll.frame
     }
 }

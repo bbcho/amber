@@ -18,3 +18,16 @@ docs, Package.swift, README.md, and .gitignore. No remote repository was configu
 Scope additions were explicitly requested: autosave, smaller editor body, Vim keybindings,
 and app display name Amber. Internal executable/bundle identifier and recovery location
 remain stable to avoid invalidating existing recovery data. Vim is a documented subset.
+
+## Compact layout follow-up
+
+User requested removal of wasted margins before installation. Removed the 16-point outer
+bezel, reduced editor inset from 22 to 8 points, and removed extra line-fragment padding.
+Header and footer are 28 and 22 points high; their fonts remain 12 and 11 points, with
+12-point body text. The amber header shares the native title-bar row, reserving 84 points on the left for
+window controls instead of adding a separate row. The CRT texture
+continues to exclude the footer. Only TerminalView.swift and this verification note changed.
+
+PASS: release build and signature; all 17 tests, including long-document resizing.
+PASS: running native app inspected with edge-to-edge header/editor and compact text inset.
+Installation is paused at the user's request; the updated bundle is build/Amber.app.
