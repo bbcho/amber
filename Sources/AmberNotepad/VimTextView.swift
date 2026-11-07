@@ -6,6 +6,7 @@ final class TerminalTextView: NSTextView {
     private(set) var mode: Mode = .normal
     var vimEnabled = true { didSet { setMode(vimEnabled ? .normal : .insert) } }
     var modeDidChange: (() -> Void)?
+    var commandRequested: (() -> Void)?
     private var pending = ""
     private var count = ""
     private var register = ""
@@ -56,6 +57,12 @@ final class TerminalTextView: NSTextView {
             return
         }
         guard mode != .insert else { super.keyDown(with: event); return }
+        if mode == .normal, key == ":", !control {
+            pending = ""
+            count = ""
+            commandRequested?()
+            return
+        }
         if control {
             switch key {
             case "r": undoManager?.redo()

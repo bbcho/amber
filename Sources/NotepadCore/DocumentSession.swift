@@ -70,6 +70,18 @@ public final class DocumentSession {
         snapshot = empty
     }
 
+    public func removeRecovery() throws {
+        if FileManager.default.fileExists(atPath: recoveryURL.path) {
+            try FileManager.default.removeItem(at: recoveryURL)
+        }
+    }
+
+    public func detachFromFile() throws {
+        let detached = Snapshot(file: file, url: nil, savedBytes: nil)
+        try writeRecovery(detached)
+        snapshot = detached
+    }
+
     private func writeRecovery(_ value: Snapshot) throws {
         try FileManager.default.createDirectory(
             at: recoveryURL.deletingLastPathComponent(),

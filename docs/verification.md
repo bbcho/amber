@@ -1,3 +1,29 @@
+# Current verification — multiple windows and Vim file commands
+
+| Acceptance criterion | Result | Evidence |
+| --- | --- | --- |
+| One independent document per window; no tabs | PASS | Native Cmd-N and Window menu; independent buffers and undo/session ownership |
+| :w, :wq, :wqa, :q, :x, :e | PASS | Native command entry, file writes and window effects; parser and workspace tests |
+| Cancelled/failed saves keep windows open | PASS | Native Save/Close/:wqa cancellation; forced write-all failure regression |
+| All open drafts survive application quit | PASS | Native quit/relaunch restored legacy scratchpad plus second draft separately |
+| Protect named/unnamed edits and file ownership | PASS | E37 gates, symlink/hardlink reuse, forced cross-window save/edit refusal, duplicate recovery preservation |
+| Old header alignment, fonts and margins | PASS | Same prior label geometry; layout reapplied after showing each window; independent UI review A- |
+| Build, signature and regression suite | PASS | Release bundle installed in /Applications; 44 tests pass |
+| Independent review | PASS | Code A- and UI A-, no unresolved material findings |
+
+The native success checks for :w/:e/:wqa/:x used the exact production core/window/view/app
+sources with a separate injected recovery directory in an isolated validation bundle, so the
+user's scratchpad was not saved, replaced, or closed by those checks. Native :wq was also
+verified in a second real-app test window, closing only that window. The original scratchpad
+remained byte-for-byte intact in its legacy recovery file; private backups stay in ignored build/.
+
+Current scope supersedes the original one-window limit at the user's explicit request.
+Changes remain within app/core modules, matching tests, README and design/verification docs.
+The only runtime additions are the pure command parser, footer command entry, and per-window
+ownership/lifecycle. No tabs, split panes, external commands, or settings system were added.
+
+---
+
 # Amber verification — 2026-11-07
 
 | Acceptance criterion | Result | Evidence |
