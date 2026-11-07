@@ -3,69 +3,193 @@ import NotepadCore
 import UniformTypeIdentifiers
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDelegate {
-    private let session: DocumentSession
-    private let recoveryURL: URL
-    private var window: NSWindow!
-    private var terminal: TerminalView!
-    private var autosaveTimer: Timer?
-    private var saveMessage = "Drafts save automatically"
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+    private let legacyRecoveryURL: URL
+    private var recoveryDirectory: URL {
+        legacyRecoveryURL.deletingLastPathComponent().appendingPathComponent("Drafts")
+    }
+    private(set) var editors: [EditorWindow] = []
+    private var didLaunch = false
     private var startupFailed = false
-    private var pendingOpenURL: URL?
+    private var pendingOpenURLs: [URL] = []
 
-    init(recoveryURL: URL) {
-        self.recoveryURL = recoveryURL
-        session = DocumentSession(recoveryURL: recoveryURL)
+    init(recoveryURL: URL) { legacyRecoveryURL = recoveryURL }
+
+    private var activeEditor: EditorWindow? {
+        editors.first { $0.window === NSApp.keyWindow }
+            ?? editors.first { $0.window === NSApp.mainWindow }
+            ?? editors.last
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSWindow.allowsAutomaticWindowTabbing = false
         buildMenu()
-        buildWindow()
         do {
-            try session.restore()
-            showDocument()
-            saveMessage = session.url == nil ? "Draft recovery is on" : "Autosave is on"
-            updateStatus()
-            if let pendingOpenURL {
-                self.pendingOpenURL = nil
-                open(pendingOpenURL)
-            }
+            try restoreWindows()
+            didLaunch = true
+            let pending = pendingOpenURLs
+            pendingOpenURLs = []
+            for url in pending { openFile(url) }
+            NSApp.activate(ignoringOtherApps: true)
         } catch {
             startupFailed = true
-            let alert = NSAlert(error: error)
-            alert.messageText = "Your previous draft could not be restored"
-            alert.informativeText = "The recovery file has been kept at \(recoveryURL.path). "
-                + "Move it aside before reopening Amber."
-            alert.runModal()
+            NSAlert(error: error).runModal()
             NSApp.terminate(nil)
         }
-        NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func buildWindow() {
-        NSWindow.allowsAutomaticWindowTabbing = false
-        window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 720),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered, defer: false
-        )
-        window.title = "Amber"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.backgroundColor = .black
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 540, height: 360)
-        window.tabbingMode = .disallowed
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.setFrameAutosaveName("AmberNotepadWindow")
-        terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: 1000, height: 720))
-        terminal.textView.delegate = self
-        terminal.textView.modeDidChange = { [weak self] in self?.updateStatus() }
-        window.contentView = terminal
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(terminal.textView)
+    func restoreWindows() throws {
+        for url in try recoveryFiles() { try createWindow(recoveryURL: url) }
+        if editors.isEmpty { try createWindow() }
+    }
+
+    private func recoveryFiles() throws -> [URL] {
+        var files: [URL] = []
+        if FileManager.default.fileExists(atPath: legacyRecoveryURL.path) {
+            files.append(legacyRecoveryURL)
+        }
+        do {
+            files += try FileManager.default.contentsOfDirectory(
+                at: recoveryDirectory, includingPropertiesForKeys: nil
+            ).filter { $0.pathExtension == "json" }.sorted { $0.path < $1.path }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return files
+        }
+        return files
+    }
+
+    @discardableResult
+    func createWindow(fileURL: URL? = nil, recoveryURL: URL? = nil) throws -> EditorWindow {
+        if let fileURL, let existing = try owner(of: fileURL) {
+            existing.show()
+            return existing
+        }
+        let recovery = recoveryURL ?? recoveryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        let editor = try EditorWindow(recoveryURL: recovery)
+        editor.canUseFile = { [weak self] editor, url in
+            try self?.owner(of: url, excluding: editor) == nil
+        }
+        editor.onCommand = { [weak self] editor, command in
+            self?.execute(command, in: editor)
+        }
+        editor.onClose = { [weak self] editor in
+            self?.editors.removeAll { $0 === editor }
+        }
+        do {
+            if let fileURL { try editor.load(fileURL) }
+            else if let restored = editor.documentURL, try owner(of: restored) != nil {
+                try editor.detachFromFile()
+            }
+        } catch {
+            editor.window.close()
+            throw error
+        }
+        let previous = activeEditor?.window
+        editors.append(editor)
+        if let previous {
+            let origin = NSPoint(x: previous.frame.minX + 24, y: previous.frame.maxY - 24)
+            editor.window.setFrameTopLeftPoint(origin)
+        }
+        editor.show()
+        return editor
+    }
+
+    func owner(of url: URL, excluding editor: EditorWindow? = nil) throws -> EditorWindow? {
+        for candidate in editors where candidate !== editor {
+            if let owned = candidate.documentURL, try sameFile(owned, url) { return candidate }
+        }
+        return nil
+    }
+
+    func execute(_ input: String, in editor: EditorWindow) {
+        do {
+            switch try VimCommand.parse(input) {
+            case let .write(path, force, quit):
+                if editor.write(path: path, force: force), quit { editor.close() }
+            case let .writeAll(force, quit):
+                for candidate in editors where candidate.hasUnsavedChanges {
+                    candidate.show()
+                    guard candidate.write(force: force) else { return }
+                }
+                if quit { closeAll(force: false, reportingTo: editor) }
+                else { editor.show(); editor.showCommandMessage("All windows saved") }
+            case let .quit(all, force):
+                if all { closeAll(force: force, reportingTo: editor) }
+                else { editor.close(force: force) }
+            case .exit:
+                if !editor.hasUnsavedChanges || editor.write() { editor.close() }
+            case let .edit(path, force): editor.edit(path: path, force: force)
+            case .newWindow: try createWindow()
+            }
+        } catch { editor.showCommandMessage(error.localizedDescription) }
+    }
+
+    private func closeAll(force: Bool, reportingTo editor: EditorWindow) {
+        if !force, editors.contains(where: { $0.hasUnsavedChanges }) {
+            editor.showCommandMessage("E37: An open window has unsaved changes (add ! to discard)")
+            return
+        }
+        for candidate in editors {
+            guard candidate.close(force: force) else { return }
+        }
+    }
+
+    @objc private func newDocument() {
+        do { try createWindow() }
+        catch { NSAlert(error: error).runModal() }
+    }
+
+    @objc private func openDocument() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.plainText, .text]
+        panel.allowsOtherFileTypes = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { openFile(url) }
+    }
+
+    private func openFile(_ url: URL) {
+        do { try createWindow(fileURL: url) }
+        catch { NSAlert(error: error).runModal() }
+    }
+
+    @objc private func saveDocument() { activeEditor?.write() }
+    @objc private func saveAs() { activeEditor?.saveAs() }
+    @objc private func toggleVim(_ sender: NSMenuItem) { activeEditor?.toggleVim(sender) }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleVim(_:)) {
+            menuItem.state = activeEditor?.terminal.textView.vimEnabled == true ? .on : .off
+            return activeEditor != nil
+        }
+        if menuItem.action == #selector(saveDocument) || menuItem.action == #selector(saveAs) {
+            return activeEditor != nil
+        }
+        return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if startupFailed { return .terminateNow }
+        for editor in editors {
+            guard editor.prepareForApplicationQuit() else { return .terminateCancel }
+        }
+        return .terminateNow
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { newDocument() }
+        return true
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        let urls = filenames.map { URL(fileURLWithPath: $0) }
+        if !didLaunch { pendingOpenURLs += urls }
+        else { for url in urls { openFile(url) } }
+        sender.reply(toOpenOrPrint: urls.isEmpty ? .failure : .success)
     }
 
     private func buildMenu() {
@@ -136,208 +260,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         menu.addItem(item)
     }
 
-    func textDidChange(_ notification: Notification) {
-        session.updateText(terminal.textView.string)
-        saveMessage = "Saving…"
-        updateStatus()
-        autosaveTimer?.invalidate()
-        autosaveTimer = Timer.scheduledTimer(
-            withTimeInterval: 0.6, repeats: false
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.autosave() }
+}
+
+private func sameFile(_ first: URL, _ second: URL) throws -> Bool {
+    let left = first.resolvingSymlinksInPath().standardizedFileURL
+    let right = second.resolvingSymlinksInPath().standardizedFileURL
+    if left == right { return true }
+    guard let leftID = try fileIdentity(left), let rightID = try fileIdentity(right) else {
+        return false
+    }
+    return leftID == rightID
+}
+
+private struct FileIdentity: Equatable {
+    let device: UInt64
+    let inode: UInt64
+}
+
+private func fileIdentity(_ url: URL) throws -> FileIdentity? {
+    do {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let device = attributes[.systemNumber] as? NSNumber,
+              let inode = attributes[.systemFileNumber] as? NSNumber else {
+            throw CocoaError(.fileReadUnknown)
         }
-    }
-
-    func textViewDidChangeSelection(_ notification: Notification) { updateStatus() }
-
-    private func autosave() {
-        do {
-            try session.autosave()
-            saveMessage = session.url == nil ? "Draft saved locally" : "Saved automatically"
-        } catch DocumentFailure.changedOnDisk {
-            saveMessage = "File changed outside this app. Draft kept. Press ⌘S to resolve."
-        } catch {
-            saveMessage = "Autosave failed: \(error.localizedDescription) — press ⌘S"
-        }
-        updateStatus()
-    }
-
-    private func updateStatus() {
-        guard terminal != nil else { return }
-        let name = session.url?.lastPathComponent ?? "Untitled"
-        terminal.filename.stringValue = name + (session.isDirty ? " *" : "")
-        window.title = name + " — Amber"
-        window.representedURL = session.url
-        window.isDocumentEdited = session.isDirty
-        let text = terminal.textView.string as NSString
-        let offset = min(terminal.textView.selectedRange().location, text.length)
-        let prefix = text.substring(to: offset)
-        let lines = prefix.components(separatedBy: .newlines)
-        let line = prefix.reduce(1) { count, character in
-            character.isNewline ? count + 1 : count
-        }
-        let column = (lines.last?.count ?? 0) + 1
-        terminal.position.stringValue = "Ln \(line)   Col \(column)"
-        let mode = terminal.textView.vimEnabled ? "[\(terminal.textView.mode.rawValue)]  " : ""
-        terminal.status.stringValue = mode + saveMessage
-    }
-
-    private func showDocument() {
-        autosaveTimer?.invalidate()
-        terminal.textView.string = session.file.text
-        terminal.textView.setMode(terminal.textView.vimEnabled ? .normal : .insert)
-        terminal.textView.undoManager?.removeAllActions()
-        terminal.textView.setSelectedRange(NSRange(location: 0, length: 0))
-        terminal.textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
-        saveMessage = session.url == nil ? "Draft recovery is on" : "Autosave is on"
-        updateStatus()
-        window.makeFirstResponder(terminal.textView)
-    }
-
-    @objc private func toggleVim(_ sender: NSMenuItem) {
-        terminal.textView.vimEnabled.toggle()
-        sender.state = terminal.textView.vimEnabled ? .on : .off
-        updateStatus()
-    }
-
-    @objc private func newDocument() {
-        guard mayReplaceDocument() else { return }
-        do {
-            try session.reset()
-            showDocument()
-        } catch { present(error) }
-    }
-
-    @objc private func openDocument() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.plainText, .text]
-        panel.allowsOtherFileTypes = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        open(url)
-    }
-
-    private func open(_ url: URL) {
-        guard mayReplaceDocument() else { return }
-        do {
-            try session.open(url)
-            showDocument()
-        } catch { present(error) }
-    }
-
-    private func mayReplaceDocument() -> Bool {
-        guard session.isDirty else { return true }
-        let alert = NSAlert()
-        alert.messageText = "Save changes before opening another document?"
-        alert.informativeText = "Your current text will be replaced."
-        alert.addButton(withTitle: "Save…")
-        alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Discard Changes")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: return save()
-        case .alertThirdButtonReturn: return true
-        default: return false
-        }
-    }
-
-    @objc private func saveDocument() { _ = save() }
-    @objc private func saveAs() { _ = chooseSaveLocation() }
-
-    private func save() -> Bool {
-        guard let url = session.url else { return chooseSaveLocation() }
-        do {
-            try session.save(to: url)
-            saveMessage = "Saved"
-            updateStatus()
-            return true
-        } catch DocumentFailure.changedOnDisk {
-            return resolveConflict(url)
-        } catch {
-            present(error)
-            return false
-        }
-    }
-
-    private func chooseSaveLocation() -> Bool {
-        let panel = NSSavePanel()
-        panel.title = "Save your document"
-        panel.nameFieldStringValue = session.url?.lastPathComponent ?? "Untitled.txt"
-        panel.directoryURL = session.url?.deletingLastPathComponent()
-        panel.canCreateDirectories = true
-        panel.isExtensionHidden = false
-        guard panel.runModal() == .OK, let url = panel.url else { return false }
-        do {
-            try session.save(to: url, overwrite: true)
-            saveMessage = "Saved — autosave is on"
-            updateStatus()
-            return true
-        } catch {
-            present(error)
-            return false
-        }
-    }
-
-    private func resolveConflict(_ url: URL) -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "This file changed outside Amber"
-        alert.informativeText = "Your edits are kept in recovery. Save a separate copy, "
-            + "or deliberately replace the file on disk with your text."
-        alert.addButton(withTitle: "Save As…")
-        alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Replace File")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: return chooseSaveLocation()
-        case .alertThirdButtonReturn:
-            do {
-                try session.save(to: url, overwrite: true)
-                saveMessage = "Saved"
-                updateStatus()
-                return true
-            } catch { present(error); return false }
-        default: return false
-        }
-    }
-
-    private func present(_ error: Error) {
-        saveMessage = "Save or open failed — your current text is still here"
-        updateStatus()
-        NSAlert(error: error).runModal()
-    }
-
-    private func flushBeforeClosing() -> Bool {
-        autosaveTimer?.invalidate()
-        do {
-            try session.autosave()
-            return true
-        } catch {
-            present(error)
-            return false
-        }
-    }
-
-    func windowShouldClose(_ sender: NSWindow) -> Bool { flushBeforeClosing() }
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        startupFailed || flushBeforeClosing() ? .terminateNow : .terminateCancel
-    }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-
-    func application(_ sender: NSApplication, openFiles filenames: [String]) {
-        guard filenames.count == 1, let filename = filenames.first else {
-            let alert = NSAlert()
-            alert.messageText = "Open one file at a time"
-            alert.runModal()
-            sender.reply(toOpenOrPrint: .failure)
-            return
-        }
-        guard window != nil else {
-            pendingOpenURL = URL(fileURLWithPath: filename)
-            sender.reply(toOpenOrPrint: .success)
-            return
-        }
-        open(URL(fileURLWithPath: filename))
-        window.makeKeyAndOrderFront(nil)
-        sender.reply(toOpenOrPrint: .success)
+        return FileIdentity(device: device.uint64Value, inode: inode.uint64Value)
+    } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+        return nil
     }
 }

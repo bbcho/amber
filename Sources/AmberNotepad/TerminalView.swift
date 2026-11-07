@@ -29,11 +29,13 @@ final class ScreenTexture: NSView {
 }
 
 @MainActor
-final class TerminalView: NSView {
+final class TerminalView: NSView, NSTextFieldDelegate {
     let textView = TerminalTextView(frame: .zero)
     let filename = NSTextField(labelWithString: "Untitled")
     let position = NSTextField(labelWithString: "Ln 1   Col 1")
     let status = NSTextField(labelWithString: "Drafts save automatically")
+    let commandLine = NSTextField()
+    var commandSubmitted: ((String) -> Void)?
     private let screen = NSView()
     private let header = NSView()
     private let scroll = NSScrollView()
@@ -67,10 +69,56 @@ final class TerminalView: NSView {
         status.lineBreakMode = .byTruncatingMiddle
         status.setAccessibilityLabel("Save status")
         screen.addSubview(status)
+        commandLine.font = status.font
+        commandLine.textColor = Phosphor.amber
+        commandLine.isBordered = false
+        commandLine.drawsBackground = false
+        commandLine.focusRingType = .none
+        commandLine.usesSingleLineMode = true
+        commandLine.lineBreakMode = .byClipping
+        commandLine.delegate = self
+        commandLine.isHidden = true
+        commandLine.setAccessibilityLabel("Vim command")
+        screen.addSubview(commandLine)
         screen.addSubview(texture)
+        textView.commandRequested = { [weak self] in self?.beginCommand() }
     }
 
     required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    func beginCommand() {
+        commandLine.stringValue = ":"
+        status.isHidden = true
+        commandLine.isHidden = false
+        window?.makeFirstResponder(commandLine)
+        if let editor = commandLine.currentEditor() as? NSTextView {
+            editor.insertionPointColor = Phosphor.amber
+            editor.setSelectedRange(NSRange(location: 1, length: 0))
+        }
+    }
+
+    func control(
+        _ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector
+    ) -> Bool {
+        guard control === commandLine, !commandLine.isHidden else { return false }
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            endCommand()
+            return true
+        }
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        let command = textView.string
+        endCommand()
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed != ":" { commandSubmitted?(command) }
+        return true
+    }
+
+    private func endCommand() {
+        commandLine.isHidden = true
+        status.isHidden = false
+        if textView.mode != .normal { textView.setMode(.normal) }
+        window?.makeFirstResponder(textView)
+    }
 
     private func configureEditor() {
         textView.isRichText = false
@@ -133,8 +181,20 @@ final class TerminalView: NSView {
         screen.frame = bounds
         let size = screen.bounds.size
         header.frame = NSRect(x: 0, y: size.height - 28, width: size.width, height: 28)
-        filename.frame = NSRect(x: 84, y: 4, width: max(100, size.width - 272), height: 21)
-        position.frame = NSRect(x: size.width - 178, y: 4, width: 170, height: 21)
+        let rowCenter: CGFloat
+        if let button = window?.standardWindowButton(.closeButton) {
+            rowCenter = header.convert(button.bounds, from: button).midY
+        } else {
+            rowCenter = header.bounds.midY
+        }
+        let labelHeight = filename.intrinsicContentSize.height
+        let labelY = rowCenter - labelHeight / 2
+        filename.frame = NSRect(
+            x: 84, y: labelY, width: max(100, size.width - 272), height: labelHeight
+        )
+        position.frame = NSRect(
+            x: size.width - 178, y: labelY, width: 170, height: labelHeight
+        )
         scroll.frame = NSRect(x: 0, y: 22, width: size.width, height: size.height - 50)
         textView.minSize = NSSize(width: 0, height: scroll.contentSize.height)
         textView.setFrameSize(NSSize(
@@ -143,6 +203,7 @@ final class TerminalView: NSView {
         ))
         textView.sizeToFit()
         status.frame = NSRect(x: 8, y: 4, width: size.width - 16, height: 15)
+        commandLine.frame = status.frame
         texture.frame = scroll.frame
     }
 }

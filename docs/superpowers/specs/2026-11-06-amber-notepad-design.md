@@ -45,3 +45,7 @@ mode indicator, Edit menu toggle. Native app menus/shortcuts remain available.
 This is a Vim-style subset, no runtime/plugins/configuration/ex commands.
 
 Final display name: Amber. Bundle: build/Amber.app. Keep internal identity/recovery path stable.
+
+2026-11-07 scope revision: user explicitly requested independent multiple windows and Vim
+colon file commands. The newer windows-and-vim-commands plan supersedes the original
+single-window constraint; each window still edits one file, with no tabs or splits.

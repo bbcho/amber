@@ -6,6 +6,7 @@ final class TerminalTextView: NSTextView {
     private(set) var mode: Mode = .normal
     var vimEnabled = true { didSet { setMode(vimEnabled ? .normal : .insert) } }
     var modeDidChange: (() -> Void)?
+    var commandRequested: (() -> Void)?
     private var pending = ""
     private var count = ""
     private var register = ""
@@ -17,9 +18,12 @@ final class TerminalTextView: NSTextView {
         self.mode = mode
         pending = ""
         count = ""
-        if mode == .normal {
-            setSelectedRange(NSRange(location: selectedRange().location, length: 0))
-        }
+        // AppKit caches caret visibility; reapply selection after changing the Vim mode.
+        let selection = selectedRange()
+        setSelectedRange(NSRange(
+            location: selection.location, length: mode == .normal ? 0 : selection.length
+        ))
+        updateInsertionPointStateAndRestartTimer(true)
         needsDisplay = true
         modeDidChange?()
     }
@@ -53,6 +57,12 @@ final class TerminalTextView: NSTextView {
             return
         }
         guard mode != .insert else { super.keyDown(with: event); return }
+        if mode == .normal, key == ":", !control {
+            pending = ""
+            count = ""
+            commandRequested?()
+            return
+        }
         if control {
             switch key {
             case "r": undoManager?.redo()
