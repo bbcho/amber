@@ -48,3 +48,14 @@ PASS: release build, local signature, and 17 existing tests. The image renderer 
 10 native sizes and produced a valid ICNS container. Installed in /Applications/Amber.app.
 PASS: user physically confirmed Control-Option-Command-A opens Amber through the native
 Open Amber shortcut. This OS-level shortcut is configured locally, not embedded in the app.
+
+## First Insert-mode caret regression
+
+Reproduced on a fresh native launch: first i entered Insert mode while the caret stayed
+invisible until a click. Focus diagnostics showed the window was key, the app active,
+and the text view already first responder. Refreshing only the insertion timer did not fix it.
+
+Reapplying the current selection on mode change, then refreshing insertion-point state,
+made the caret appear on the first i without clicking. Selection length is preserved outside
+Normal mode. Native UI verified after installation; focused independent review PASS, A.
+Temporary diagnostics were removed. All 17 regression tests pass.

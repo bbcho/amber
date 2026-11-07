@@ -17,9 +17,12 @@ final class TerminalTextView: NSTextView {
         self.mode = mode
         pending = ""
         count = ""
-        if mode == .normal {
-            setSelectedRange(NSRange(location: selectedRange().location, length: 0))
-        }
+        // AppKit caches caret visibility; reapply selection after changing the Vim mode.
+        let selection = selectedRange()
+        setSelectedRange(NSRange(
+            location: selection.location, length: mode == .normal ? 0 : selection.length
+        ))
+        updateInsertionPointStateAndRestartTimer(true)
         needsDisplay = true
         modeDidChange?()
     }
