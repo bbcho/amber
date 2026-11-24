@@ -37,16 +37,16 @@ final class MarkdownRendererTests: XCTestCase {
             XCTAssertEqual(rendered.string, "let x = 1\nafter")
             XCTAssertTrue(font(rendered, at: "let x").fontDescriptor.symbolicTraits
                 .contains(.monoSpace))
-            XCTAssertFalse(paragraph(rendered, at: "let x").textBlocks.isEmpty)
-            XCTAssertTrue(paragraph(rendered, at: "after").textBlocks.isEmpty)
+            XCTAssertEqual(attribute(.markdownBlock, rendered, at: "let x") as? String, "code")
+            XCTAssertNil(attribute(.markdownBlock, rendered, at: "after"))
         }
     }
 
     func test_block_quotes_get_a_left_bar() async {
         await MainActor.run {
             let rendered = render("> quoted")
-            let block = paragraph(rendered, at: "quoted").textBlocks.first
-            XCTAssertGreaterThan(block?.width(for: .border, edge: .minX) ?? 0, 0)
+            XCTAssertEqual(attribute(.markdownBlock, rendered, at: "quoted") as? String, "quote")
+            XCTAssertEqual(paragraph(rendered, at: "quoted").headIndent, 11)
         }
     }
 

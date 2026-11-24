@@ -7,7 +7,7 @@ final class MarkdownPreviewView: NSTextView {
     private var count = ""
     private var awaitingSecondG = false
 
-    /// Built on an explicit TextKit 1 stack: `NSTextBlock` boxes and bars need it.
+    /// Built on an explicit TextKit 1 stack so block decorations can use the layout manager.
     convenience init() {
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
@@ -35,6 +35,42 @@ final class MarkdownPreviewView: NSTextView {
             .foregroundColor: Phosphor.bar
         ]
         setAccessibilityLabel("Rendered Markdown")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        drawBlockDecorations()
+        super.draw(dirtyRect)
+    }
+
+    /// Quote bars and code boxes sit in the indent `MarkdownBlock.indent` leaves for them.
+    private func drawBlockDecorations() {
+        guard let storage = textStorage, let layout = layoutManager else { return }
+        let origin = textContainerOrigin
+        storage.enumerateAttribute(
+            .markdownBlock, in: NSRange(location: 0, length: storage.length)
+        ) { value, range, _ in
+            guard let raw = value as? String, let block = MarkdownBlock(rawValue: raw) else {
+                return
+            }
+            let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            var area = NSRect.null
+            layout.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, _, _ in
+                area = area.union(rect)
+            }
+            guard !area.isNull else { return }
+            let style = storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
+            let textStart = (style as? NSParagraphStyle)?.headIndent ?? block.indent
+            let left = origin.x + textStart - block.indent
+            switch block {
+            case .quote:
+                Phosphor.amber.withAlphaComponent(0.6).setFill()
+                NSRect(x: left, y: area.minY + origin.y, width: 3, height: area.height).fill()
+            case .code:
+                Phosphor.amber.withAlphaComponent(0.08).setFill()
+                NSRect(x: left, y: area.minY + origin.y, width: area.maxX + origin.x - left,
+                       height: area.height).fill()
+            }
+        }
     }
 
     var lineStep: CGFloat {

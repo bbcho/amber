@@ -117,6 +117,54 @@ final class MarkdownPreviewTests: XCTestCase {
         }
     }
 
+    func test_quote_and_code_boxes_survive_following_text_in_layout() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            terminal.showMarkdown(MarkdownRenderer.render(
+                "a\n\n> quoted\n\n```\ncoded\n```\n\nafter"
+            ))
+            // Bar 3 + padding 8 for quotes; padding 6 for code boxes.
+            XCTAssertEqual(layoutX(of: "quoted", in: terminal.preview), 11)
+            XCTAssertEqual(layoutX(of: "coded", in: terminal.preview), 6)
+            XCTAssertEqual(layoutX(of: "after", in: terminal.preview), 0)
+        }
+    }
+
+    func test_quote_bar_and_code_box_are_drawn() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            let preview = terminal.preview
+            terminal.showMarkdown(MarkdownRenderer.render("> quoted\n\n```\ncoded\n```\n\nafter"))
+            let image = preview.bitmapImageRepForCachingDisplay(in: preview.bounds)!
+            preview.cacheDisplay(in: preview.bounds, to: image)
+            @MainActor func pixel(leftOf needle: String, by offset: CGFloat) -> NSColor? {
+                let x = layoutX(of: needle, in: preview) + preview.textContainerOrigin.x - offset
+                let range = (preview.string as NSString).range(of: needle)
+                let glyphs = preview.layoutManager!.glyphRange(
+                    forCharacterRange: range, actualCharacterRange: nil
+                )
+                let y = preview.layoutManager!.boundingRect(
+                    forGlyphRange: glyphs, in: preview.textContainer!
+                ).midY + preview.textContainerOrigin.y
+                let scale = CGFloat(image.pixelsWide) / preview.bounds.width
+                return image.colorAt(x: Int(x * scale), y: Int(y * scale))?.usingColorSpace(.sRGB)
+            }
+            // The bar sits 9.5 points left of quote text; the box fills code's padding.
+            XCTAssertGreaterThan(pixel(leftOf: "quoted", by: 9.5)?.alphaComponent ?? 0, 0.4)
+            XCTAssertGreaterThan(pixel(leftOf: "coded", by: 3)?.alphaComponent ?? 0, 0.05)
+            XCTAssertEqual(pixel(leftOf: "after", by: 3)?.alphaComponent ?? 1, 0, accuracy: 0.01)
+        }
+    }
+
+    @MainActor private func layoutX(of needle: String, in view: NSTextView) -> CGFloat {
+        let range = (view.string as NSString).range(of: needle)
+        let layout = view.layoutManager!
+        let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        return layout.boundingRect(forGlyphRange: glyphs, in: view.textContainer!).minX
+    }
+
     @MainActor private func editorWindow() -> (TerminalView, NSWindow) {
         _ = NSApplication.shared
         let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: 1000, height: 720))

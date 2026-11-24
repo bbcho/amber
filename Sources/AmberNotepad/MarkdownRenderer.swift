@@ -1,5 +1,22 @@
 import AppKit
 
+/// Block decorations the rendered view draws behind the text, under `.markdownBlock`.
+enum MarkdownBlock: String {
+    case quote, code
+
+    /// How far the block's text is indented past its surroundings.
+    var indent: CGFloat {
+        switch self {
+        case .quote: return 11
+        case .code: return 6
+        }
+    }
+}
+
+extension NSAttributedString.Key {
+    static let markdownBlock = NSAttributedString.Key("AmberMarkdownBlock")
+}
+
 /// Turns Markdown source into amber-styled, read-only display text.
 @MainActor
 enum MarkdownRenderer {
@@ -29,7 +46,6 @@ enum MarkdownRenderer {
         let output = NSMutableAttributedString()
         private var previousBlocks: [PresentationIntent.IntentType] = []
         private var markedItems = Set<Int>()
-        private var textBlocks: [Int: NSTextBlock] = [:]
 
         mutating func append(_ runText: String, run: AttributedString.Runs.Run) {
             let blocks = run.presentationIntent?.components ?? []
@@ -50,9 +66,6 @@ enum MarkdownRenderer {
             }
             if isNewBlock { text = marker(for: blocks) + text }
             var styled = MarkdownRenderer.attributes(for: blocks, run: run)
-            if let style = styled[.paragraphStyle] as? NSMutableParagraphStyle {
-                style.textBlocks = textBlock(for: blocks).map { [$0] } ?? []
-            }
             if run.link != nil { styled[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             output.append(NSAttributedString(string: text, attributes: styled))
             previousBlocks = blocks
@@ -76,30 +89,6 @@ enum MarkdownRenderer {
             if case .orderedList = list { return "\(ordinal). " }
             return MarkdownRenderer.listDepth(blocks) % 2 == 1 ? "• " : "◦ "
         }
-
-        private mutating func textBlock(
-            for blocks: [PresentationIntent.IntentType]
-        ) -> NSTextBlock? {
-            for component in blocks {
-                let block: NSTextBlock
-                switch component.kind {
-                case .codeBlock:
-                    block = textBlocks[component.identity] ?? NSTextBlock()
-                    block.backgroundColor = Phosphor.amber.withAlphaComponent(0.08)
-                    block.setWidth(6, type: .absoluteValueType, for: .padding)
-                case .blockQuote:
-                    block = textBlocks[component.identity] ?? NSTextBlock()
-                    block.setWidth(3, type: .absoluteValueType, for: .border, edge: .minX)
-                    block.setBorderColor(Phosphor.amber.withAlphaComponent(0.6), for: .minX)
-                    block.setWidth(8, type: .absoluteValueType, for: .padding, edge: .minX)
-                default:
-                    continue
-                }
-                textBlocks[component.identity] = block
-                return block
-            }
-            return nil
-        }
     }
 
     private static func listDepth(_ blocks: [PresentationIntent.IntentType]) -> Int {
@@ -115,6 +104,7 @@ enum MarkdownRenderer {
         for blocks: [PresentationIntent.IntentType], run: AttributedString.Runs.Run?
     ) -> [NSAttributedString.Key: Any] {
         var font = bodyFont
+        var decoration: MarkdownBlock?
         var color = Phosphor.amber
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
@@ -126,6 +116,9 @@ enum MarkdownRenderer {
                 color = Phosphor.bar
             case .codeBlock:
                 font = Phosphor.font
+                decoration = .code
+            case .blockQuote:
+                decoration = decoration ?? .quote
             case .tableHeaderRow:
                 font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
             case let .table(columns):
@@ -137,6 +130,7 @@ enum MarkdownRenderer {
             }
         }
         let indent = min(CGFloat(listDepth(blocks)) * indentStep, maximumIndent)
+            + (decoration?.indent ?? 0)
         paragraph.headIndent = indent
         paragraph.firstLineHeadIndent = indent
         var attributes: [NSAttributedString.Key: Any] = [.foregroundColor: color]
@@ -153,6 +147,7 @@ enum MarkdownRenderer {
             }
         }
         attributes[.font] = font
+        attributes[.markdownBlock] = decoration?.rawValue
         attributes[.paragraphStyle] = paragraph
         return attributes
     }
