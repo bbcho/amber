@@ -45,4 +45,8 @@ final class VimKeyTests: XCTestCase {
     func test_a_control_character_key_writes_as_C_dash_letter() {
         XCTAssertEqual(VimKey(.character("d"), control: true).notation, "<C-d>")
     }
+
+    func test_space_is_a_space_character() throws {
+        XCTAssertEqual(try VimKey.parse("<Space>"), [VimKey(.character(" "))])
+    }
 }

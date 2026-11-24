@@ -124,4 +124,12 @@ final class VimBufferTests: XCTestCase {
         XCTAssertEqual(b.wordClass(at: 1, bigWord: false), .blank)
         XCTAssertEqual(b.wordClass(at: 2, bigWord: false), .blank)
     }
+
+    func test_emoji_are_their_own_word_class_as_in_vim() {
+        let b = buffer("a😀.👨\u{200D}👩")
+        XCTAssertEqual(b.wordClass(at: 1, bigWord: false), .emoji)
+        XCTAssertEqual(b.wordClass(at: 3, bigWord: false), .punctuation)
+        XCTAssertEqual(b.wordClass(at: 4, bigWord: false), .emoji)
+        XCTAssertEqual(b.wordClass(at: 1, bigWord: true), .word)
+    }
 }

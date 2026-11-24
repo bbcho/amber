@@ -9,6 +9,9 @@ import Foundation
 public struct VimBuffer {
     public enum WordClass: Equatable {
         case blank, word, punctuation
+        /// Vim gives emoji above U+00FF a class of their own, so `w` stops before and after
+        /// a run of them.
+        case emoji
     }
 
     public let text: NSString
@@ -136,6 +139,10 @@ public struct VimBuffer {
         else { return .blank }
         if character.isWhitespace { return .blank }
         if bigWord { return .word }
+        if let scalar = character.unicodeScalars.first, scalar.value > 0xFF,
+           scalar.properties.isEmoji {
+            return .emoji
+        }
         return character.isLetter || character.isNumber || character == "_" ? .word : .punctuation
     }
 }

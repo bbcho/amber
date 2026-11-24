@@ -22,7 +22,7 @@ public struct VimKey: Hashable {
         ("BS", .backspace), ("Tab", .tab), ("Up", .up), ("Down", .down),
         ("Left", .left), ("Right", .right), ("Home", .home), ("End", .end),
         ("PageUp", .pageUp), ("PageDown", .pageDown), ("Del", .delete),
-        ("lt", .character("<")),
+        ("lt", .character("<")), ("Space", .character(" ")),
     ]
 
     /// Parses notation such as `dd<Esc>` or `<C-r>a`. Names are case-insensitive, as in Vim.
