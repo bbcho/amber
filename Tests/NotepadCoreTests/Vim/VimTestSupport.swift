@@ -39,11 +39,12 @@ func render(_ text: String, cursor: Int, selections: [NSRange]) -> String {
 /// Feeds `keys` (Vim key notation) to the engine with `before` (cursor written as `|`).
 /// Edits are applied in order, each to the text the previous one produced. The fake view
 /// shows `lines` lines from `top`, follows scroll effects, and otherwise scrolls only as far
-/// as `scrolloff` needs, as the adapter does.
+/// as `scrolloff` needs, as the adapter does. Keys from a `.replay` effect are fed next, as
+/// the adapter does for `.`. `clipboard` is what the system clipboard holds.
 @discardableResult
 func runVim(_ before: String, _ keys: String, window: VimWindowState = VimWindowState(),
             session: VimSession = VimSession(), lines: Int = 20, top: Int = 0,
-            wrapWidth: Int = 80) -> VimRun {
+            wrapWidth: Int = 80, clipboard: String? = nil) -> VimRun {
     let (start, cursor) = splitCursor(before)
     let text = NSMutableString(string: start)
     var window = window
@@ -52,14 +53,15 @@ func runVim(_ before: String, _ keys: String, window: VimWindowState = VimWindow
     var effects: [VimEffect] = []
     var top = top
     var selections: [NSRange] = []
-    let parsed: [VimKey]
-    do { parsed = try VimKey.parse(keys) } catch { preconditionFailure("bad keys \(keys)") }
-    for key in parsed {
+    var queue: [VimKey]
+    do { queue = try VimKey.parse(keys) } catch { preconditionFailure("bad keys \(keys)") }
+    while !queue.isEmpty {
+        let key = queue.removeFirst()
         let snapshot = NSString(string: text)
         let screen = ScreenGeometry.fake(lines: lines, top: top, text: snapshot,
                                          wrapWidth: wrapWidth)
         let result = VimEngine.handle(key, window: window, session: session, text: snapshot,
-                                      screen: screen, clipboard: { nil })
+                                      screen: screen, clipboard: { clipboard })
         for edit in result.edits {
             text.replaceCharacters(in: edit.range, with: edit.replacement)
         }
@@ -67,6 +69,9 @@ func runVim(_ before: String, _ keys: String, window: VimWindowState = VimWindow
         session = result.session
         selections = result.selections
         effects += result.effects
+        for case .replay(let replayed) in result.effects {
+            queue.insert(contentsOf: replayed, at: 0)
+        }
         top = fakeTop(after: result.effects, top: top, lines: lines, cursor: window.cursor,
                       text: NSString(string: text), scrolloff: session.options.scrolloff)
     }
@@ -79,10 +84,10 @@ func runVim(_ before: String, _ keys: String, window: VimWindowState = VimWindow
 @discardableResult
 func assertVim(_ before: String, _ keys: String, _ after: String,
                window: VimWindowState = VimWindowState(), session: VimSession = VimSession(),
-               lines: Int = 20, top: Int = 0, wrapWidth: Int = 80,
+               lines: Int = 20, top: Int = 0, wrapWidth: Int = 80, clipboard: String? = nil,
                file: StaticString = #filePath, line: UInt = #line) -> VimRun {
     let run = runVim(before, keys, window: window, session: session, lines: lines, top: top,
-                     wrapWidth: wrapWidth)
+                     wrapWidth: wrapWidth, clipboard: clipboard)
     XCTAssertEqual(run.rendered, after, "keys \(keys)", file: file, line: line)
     return run
 }
@@ -122,4 +127,21 @@ func numberedLines(_ count: Int, cursorLine: Int = 0, column: Int = 0) -> String
         }
         return line
     }.joined(separator: "\n")
+}
+
+extension VimRun {
+    /// What register `name` holds after the run, reading `+` and `*` as an empty clipboard.
+    func register(_ name: Character) -> RegisterValue? {
+        session.registers.value(name, clipboard: { nil })
+    }
+}
+
+func charwise(_ text: String) -> RegisterValue { RegisterValue(text: text, kind: .characterwise) }
+func linewise(_ text: String) -> RegisterValue { RegisterValue(text: text, kind: .linewise) }
+
+/// A session with `options` changed by `:set`-style assignments.
+func session(_ change: (inout VimOptions) -> Void) -> VimSession {
+    var session = VimSession()
+    change(&session.options)
+    return session
 }

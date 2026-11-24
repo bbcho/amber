@@ -42,12 +42,17 @@ public struct VimResult: Equatable {
     public var effects: [VimEffect]
 }
 
-/// A Normal-mode command other than a motion.
+/// A Normal-mode command.
 enum NormalCommand: Equatable {
     case motion(Motion)
     case scroll(Scroll)
     case jumpOlder, jumpNewer
     case setMark(Character)
+    /// An operator, which waits for a motion or text object.
+    case `operator`(Operator)
+    /// An operator with its target, as `x` is `dl`.
+    case operate(Operator, OperatorTarget)
+    case edit(Edit)
 
     enum Scroll: Equatable {
         /// Control-E and Control-Y.
@@ -84,7 +89,7 @@ enum NormalCommand: Equatable {
             guard keys.count > 1 else { return .incomplete }
             return keys[1].argumentCharacter.map { .complete(.setMark($0)) } ?? .unknown
         default:
-            return Motion.parse(keys).map(NormalCommand.motion)
+            return Edit.parse(keys) ?? Motion.parse(keys).map(NormalCommand.motion)
         }
     }
 
@@ -123,13 +128,14 @@ public enum VimEngine {
         var result = VimResult(window: window, session: session, edits: [], selections: [],
                                effects: [])
         switch window.mode {
-        case .normal:
-            normal(key, &result, buffer, screen)
-            result.selections = [NSRange(location: result.window.cursor, length: 0)]
-        case .insert, .replace, .visual, .visualLine, .visualBlock, .operatorPending,
-             .commandLine:
-            break
+        case .normal, .operatorPending:
+            normal(key, &result, buffer, screen, clipboard)
+        case .insert, .replace:
+            insertMode(key, &result, buffer)
+        case .visual, .visualLine, .visualBlock, .commandLine:
+            return result
         }
+        result.selections = [NSRange(location: result.window.cursor, length: 0)]
         return result
     }
 
@@ -137,8 +143,12 @@ public enum VimEngine {
 
     private static let maximumCount = 999_999_999
 
+    private static let registerKey = VimKey(.character("\""))
+
+    /// Normal and operator-pending mode: a count, a register, then a command, or after an
+    /// operator, another count and its motion or text object.
     private static func normal(_ key: VimKey, _ result: inout VimResult, _ buffer: VimBuffer,
-                               _ screen: ScreenGeometry) {
+                               _ screen: ScreenGeometry, _ clipboard: () -> String?) {
         result.window.cursor = Motions.normalPosition(result.window.cursor, in: buffer)
         if key == VimKey(.escape) {
             clearPending(&result.window)
@@ -148,26 +158,78 @@ public enum VimEngine {
             result.window.count = min((result.window.count ?? 0) * 10 + digit, maximumCount)
             return
         }
-        if result.window.pendingKeys == [VimKey(.character("\""))] {
+        let inNormal = result.window.mode == .normal
+        if inNormal && result.window.pendingKeys == [registerKey] {
             result.window.pendingKeys = []
             guard let name = key.argumentCharacter, isRegisterName(name) else {
                 fail(&result)
                 return
             }
+            foldCount(&result.window)
             result.window.register = name
             return
         }
         result.window.pendingKeys.append(key)
-        if result.window.pendingKeys == [VimKey(.character("\""))] { return }
-        switch NormalCommand.parse(result.window.pendingKeys) {
+        if inNormal && result.window.pendingKeys == [registerKey] { return }
+        if inNormal {
+            switch NormalCommand.parse(result.window.pendingKeys) {
+            case .incomplete: return
+            case .unknown: fail(&result)
+            case .complete(let command): complete(command, &result, buffer, screen, clipboard)
+            }
+            return
+        }
+        let operatorKeys = result.window.operatorKeys
+        switch OperatorTarget.parse(result.window.pendingKeys, after: operatorKeys) {
         case .incomplete:
             return
         case .unknown:
             fail(&result)
-        case .complete(let command):
-            let count = result.window.count
-            clearPending(&result.window)
-            execute(command, count: count, &result, buffer, screen)
+        case .complete(let target):
+            guard let op = Operator.named(operatorKeys) else {
+                fail(&result)
+                return
+            }
+            let input = takeInput(&result.window, keys: operatorKeys + result.window.pendingKeys)
+            operate(op, on: target, input, &result, buffer, screen)
+        }
+    }
+
+    /// Multiplies the count typed so far into the leading count, as a register name or an
+    /// operator ends it.
+    private static func foldCount(_ window: inout VimWindowState) {
+        guard let count = window.count else { return }
+        window.leadingCount = min((window.leadingCount ?? 1) * count, maximumCount)
+        window.count = nil
+    }
+
+    /// The finished command's count, register and keys, clearing them from the window.
+    private static func takeInput(_ window: inout VimWindowState,
+                                  keys: [VimKey]) -> CommandInput {
+        foldCount(&window)
+        let input = CommandInput(count: window.leadingCount, register: window.register,
+                                 keys: keys)
+        clearPending(&window)
+        return input
+    }
+
+    private static func complete(_ command: NormalCommand, _ result: inout VimResult,
+                                 _ buffer: VimBuffer, _ screen: ScreenGeometry,
+                                 _ clipboard: () -> String?) {
+        let input = takeInput(&result.window, keys: result.window.pendingKeys)
+        switch command {
+        case .motion(let motion): move(motion, count: input.count, &result, buffer, screen)
+        case .scroll(let scroll): self.scroll(scroll, count: input.count, &result, buffer, screen)
+        case .jumpOlder: jump(by: -(input.count ?? 1), &result, buffer)
+        case .jumpNewer: jump(by: input.count ?? 1, &result, buffer)
+        case .setMark(let name): setMark(name, &result, buffer)
+        case .operator:
+            result.window.operatorKeys = input.keys
+            result.window.leadingCount = input.count
+            result.window.register = input.register
+            result.window.mode = .operatorPending
+        case .operate(let op, let target): operate(op, on: target, input, &result, buffer, screen)
+        case .edit(let edit): self.edit(edit, input, &result, buffer, clipboard)
         }
     }
 
@@ -182,29 +244,21 @@ public enum VimEngine {
         VimRegisters.isWritable(name) || ".:/\"".contains(name)
     }
 
-    private static func clearPending(_ window: inout VimWindowState) {
+    static func clearPending(_ window: inout VimWindowState) {
         window.pendingKeys = []
         window.count = nil
+        window.leadingCount = nil
         window.register = nil
+        window.operatorKeys = []
+        if window.mode == .operatorPending { window.mode = .normal }
     }
 
-    private static func fail(_ result: inout VimResult) {
+    static func fail(_ result: inout VimResult) {
         clearPending(&result.window)
         result.effects.append(.failure)
     }
 
-    private static func execute(_ command: NormalCommand, count: Int?, _ result: inout VimResult,
-                                _ buffer: VimBuffer, _ screen: ScreenGeometry) {
-        switch command {
-        case .motion(let motion): move(motion, count: count, &result, buffer, screen)
-        case .scroll(let scroll): self.scroll(scroll, count: count, &result, buffer, screen)
-        case .jumpOlder: jump(by: -(count ?? 1), &result, buffer)
-        case .jumpNewer: jump(by: count ?? 1, &result, buffer)
-        case .setMark(let name): setMark(name, &result, buffer)
-        }
-    }
-
-    private static func motionContext(_ result: VimResult, _ buffer: VimBuffer,
+    static func motionContext(_ result: VimResult, _ buffer: VimBuffer,
                                       _ screen: ScreenGeometry) -> MotionContext {
         MotionContext(buffer: buffer, options: result.session.options, screen: screen,
                       desiredColumn: result.window.desiredColumn, marks: result.window.marks,
@@ -224,7 +278,7 @@ public enum VimEngine {
             if motion.isJump { recordJump(&result.window, buffer) }
             result.window.cursor = Motions.normalPosition(target.offset, in: buffer)
             result.window.desiredColumn = target.desiredColumn
-            if target.failed { result.effects.append(.failure) }
+            if target.shortfall != nil { result.effects.append(.failure) }
         }
     }
 
@@ -233,7 +287,7 @@ public enum VimEngine {
     private static let jumpListSize = 100
 
     /// Vim's `setpcmark`: the cursor becomes the `'` mark and the newest jump.
-    private static func recordJump(_ window: inout VimWindowState, _ buffer: VimBuffer) {
+    static func recordJump(_ window: inout VimWindowState, _ buffer: VimBuffer) {
         let mark = buffer.mark(at: window.cursor)
         window.marks["'"] = mark
         window.jumpList.append(mark)

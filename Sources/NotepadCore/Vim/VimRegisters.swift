@@ -65,11 +65,12 @@ public struct VimRegisters: Equatable {
 
     /// Records a delete. Without a register name, a `small` delete (within one line) goes to
     /// `-`; any other delete shifts `1`-`9` down and fills `1`. A named register takes the
-    /// text and `1` takes it too, whatever the size (checked against Vim 9.1). The black hole
-    /// changes nothing.
+    /// text and `1` takes it too, whatever the size (checked against Vim 9.1). With
+    /// `alsoNumbered`, as for Vim's `d%`, a small delete fills `1` as well as `-`. The black
+    /// hole changes nothing.
     @discardableResult
     public mutating func delete(_ value: RegisterValue, into name: Character?,
-                                small: Bool) -> String? {
+                                small: Bool, alsoNumbered: Bool = false) -> String? {
         var clipboardText: String?
         let target = Self.target(name)
         if let target {
@@ -79,7 +80,7 @@ public struct VimRegisters: Equatable {
         if target == nil && small {
             stored["-"] = value
             unnamed = value
-            return nil
+            guard alsoNumbered else { return nil }
         }
         for number in stride(from: 9, to: 1, by: -1) {
             stored[Character(String(number))] = stored[Character(String(number - 1))]

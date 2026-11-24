@@ -76,14 +76,52 @@ public struct LastVisual: Equatable {
     }
 }
 
+/// A change that `.` can repeat.
+public struct RecordedChange: Equatable {
+    public var register: Character?
+    public var count: Int?
+    /// The keys after the count and register. An insert's keys include the typed text and
+    /// the closing Escape.
+    public var keys: [VimKey]
+
+    public init(register: Character?, count: Int?, keys: [VimKey]) {
+        self.register = register
+        self.count = count
+        self.keys = keys
+    }
+}
+
+/// An Insert or Replace mode session, from the command that started it to Escape.
+public struct InsertSession: Equatable {
+    /// The text the session has inserted so far, which becomes the `.` register.
+    public var inserted = ""
+    /// How many times the text goes in: Escape adds `count - 1` more copies, as `3ix<Esc>`
+    /// inserts `xxx`.
+    public var count: Int
+    /// What goes before each extra copy: a line break and indent after `o` and `O`.
+    public var repeatPrefix: String
+
+    public init(count: Int = 1, repeatPrefix: String = "") {
+        self.count = count
+        self.repeatPrefix = repeatPrefix
+    }
+}
+
 /// What Vim keeps per window. The adapter stores one per editor window and passes it back
 /// with every key.
 public struct VimWindowState: Equatable {
     public var mode: VimMode = .normal
-    /// Keys of a command that is not complete yet, after any count and register.
+    /// Keys of a command that is not complete yet, after any count, register and operator.
     public var pendingKeys: [VimKey] = []
+    /// The count being typed.
     public var count: Int?
+    /// The product of the counts typed before a register name or an operator. It multiplies
+    /// the count typed after them, so `2"a3x` deletes six characters.
+    public var leadingCount: Int?
     public var register: Character?
+    /// The operator waiting for a motion or text object, as typed (`d`, `gU`). It is not
+    /// empty exactly when the mode is operator-pending.
+    public var operatorKeys: [VimKey] = []
     /// UTF-16 offset of the cursor.
     public var cursor = 0
     /// Vim's `curswant`: the screen column `j` and `k` aim for. `Int.max` means the end of
@@ -101,10 +139,11 @@ public struct VimWindowState: Equatable {
     /// Vim's window-local `scroll` option: the lines Control-D and Control-U move, set by
     /// a count on either and capped at the page height. Nil means half the page.
     public var scrollAmount: Int?
-    /// Keys typed since entering Insert or Replace mode; nil in other modes.
-    public var insertSession: [VimKey]?
-    /// Keys of the change in progress, which become `VimSession.lastChange` when it ends.
-    public var recordingKeys: [VimKey] = []
+    /// The insert in progress; nil outside Insert and Replace mode.
+    public var insertSession: InsertSession?
+    /// The change that entered Insert or Replace mode. The keys typed there are added to it,
+    /// and it becomes `VimSession.lastChange` at Escape.
+    public var changeInProgress: RecordedChange?
 
     public init(cursor: Int = 0) {
         self.cursor = cursor
@@ -118,7 +157,8 @@ public struct VimSession: Equatable {
     public var lastSearch: LastSearch?
     public var lastSubstitute: LastSubstitute?
     public var lastFind: LastFind?
-    public var lastChange: [VimKey]?
+    /// The change `.` repeats.
+    public var lastChange: RecordedChange?
     public var recording: Recording?
 
     public init() {}

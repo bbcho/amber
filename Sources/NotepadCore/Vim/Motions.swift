@@ -12,15 +12,24 @@ struct MotionTarget: Equatable {
     /// The desired column to keep afterwards, as `j`, `k`, `$` and `|` do. Nil resets it to
     /// the cursor's own column.
     var desiredColumn: Int?
-    /// Vim beeps but still moves, as `e` does when it runs into the end of the text.
-    var failed = false
+    /// Set when the motion ran into an end of the text but still moved.
+    var shortfall: Shortfall?
 
-    init(_ offset: Int, _ kind: MotionKind, desiredColumn: Int? = nil, failed: Bool = false) {
+    init(_ offset: Int, _ kind: MotionKind, desiredColumn: Int? = nil,
+         shortfall: Shortfall? = nil) {
         self.offset = offset
         self.kind = kind
         self.desiredColumn = desiredColumn
-        self.failed = failed
+        self.shortfall = shortfall
     }
+}
+
+/// Vim's two ways of reporting a word motion that ran out of text.
+enum Shortfall: Equatable {
+    /// `w` and `e`: Vim beeps only without an operator; an operator still acts.
+    case beepWithoutOperator
+    /// `b` and `ge`: Vim's `clearopbeep` beeps and cancels any operator.
+    case cancelOperator
 }
 
 /// A motion that could not move. `message` is Vim's error text, when Vim shows one.
@@ -49,6 +58,24 @@ enum Motion: Equatable {
     case screenTop, screenMiddle, screenBottom
     /// `` `x `` when `exact`, otherwise `'x`.
     case mark(Character, exact: Bool)
+
+    /// Whether a delete with this motion always fills register 1, even within one line, as
+    /// Vim does for `%`, `(`, `)`, `` ` ``, `{` and `}`.
+    var deletesIntoRegisterOne: Bool {
+        switch self {
+        case .sentenceBackward, .sentenceForward, .paragraphBackward, .paragraphForward,
+             .matchingPair:
+            return true
+        case .mark(_, let exact):
+            return exact
+        case .left, .right, .up, .down, .leftWrapping, .rightWrapping, .screenUp, .screenDown,
+             .previousLineStart, .nextLineStart, .currentLineStart, .wordForward, .wordBackward,
+             .wordEnd, .wordEndBackward, .lineStart, .firstNonBlank, .lineEnd, .lastNonBlank,
+             .column, .firstLine, .lastLine, .find, .repeatFind, .screenTop, .screenMiddle,
+             .screenBottom:
+            return false
+        }
+    }
 
     /// Whether Vim records the starting position in the jump list and the `'` mark.
     var isJump: Bool {
@@ -167,7 +194,8 @@ struct MotionContext {
     let marks: [Character: Mark]
     let lastVisual: LastVisual?
     let lastFind: LastFind?
-    /// With an operator, `w` stops at the end of the line and `l` may take the last character.
+    /// With an operator, `w` stops at the end of the line, `l` may take the last character,
+    /// and `h` and `l` that cannot move give empty text instead of failing, as in Vim.
     var operatorPending = false
 }
 
@@ -179,8 +207,8 @@ enum Motions {
         let b = context.buffer
         let count1 = max(count ?? 1, 1)
         switch motion {
-        case .left: return left(cursor, count1, wrapping: false, b)
-        case .leftWrapping: return left(cursor, count1, wrapping: true, b)
+        case .left: return left(cursor, count1, wrapping: false, context)
+        case .leftWrapping: return left(cursor, count1, wrapping: true, context)
         case .right: return right(cursor, count1, wrapping: false, context)
         case .rightWrapping: return right(cursor, count1, wrapping: true, context)
         case .up, .down: return vertical(cursor, motion == .down ? count1 : -count1, context)
@@ -263,7 +291,8 @@ enum Motions {
     // MARK: Characters and lines
 
     private static func left(_ cursor: Int, _ count: Int, wrapping: Bool,
-                             _ b: VimBuffer) -> Outcome {
+                             _ context: MotionContext) -> Outcome {
+        let b = context.buffer
         var offset = cursor
         for _ in 0..<count {
             let line = b.lineIndex(of: offset)
@@ -275,8 +304,10 @@ enum Motions {
                 break
             }
         }
-        return offset == cursor ? .failure(MotionFailure()) : .success(MotionTarget(offset,
-            .exclusive))
+        guard offset == cursor, !context.operatorPending else {
+            return .success(MotionTarget(offset, .exclusive))
+        }
+        return .failure(MotionFailure())
     }
 
     private static func right(_ cursor: Int, _ count: Int, wrapping: Bool,
@@ -289,8 +320,9 @@ enum Motions {
                 offset = b.nextGrapheme(after: offset) ?? offset
             } else if wrapping, line + 1 < b.lineCount {
                 offset = b.lineStart(line + 1)
-            } else if context.operatorPending, b.contentRange(at: line).length > 0 {
-                return .success(MotionTarget(offset, .inclusive))
+            } else if context.operatorPending {
+                let kind: MotionKind = b.isEmptyLine(line) ? .exclusive : .inclusive
+                return .success(MotionTarget(offset, kind))
             } else {
                 break
             }
@@ -363,41 +395,43 @@ enum Motions {
     /// Vim does not leave the cursor on the end of a line it moved onto. With an operator,
     /// the last character is then included.
     private static func adjusted(_ offset: Int, from start: Int, _ kind: MotionKind,
-                                 failed: Bool, _ b: VimBuffer) -> Outcome {
+                                 shortfall: Shortfall?, _ b: VimBuffer) -> Outcome {
         guard offset > start, b.isLineEnd(offset), offset > b.lineStart(b.lineIndex(of: offset))
-        else { return .success(MotionTarget(offset, kind, failed: failed)) }
+        else { return .success(MotionTarget(offset, kind, shortfall: shortfall)) }
         let previous = b.previousGrapheme(before: offset) ?? offset
-        return .success(MotionTarget(previous, .inclusive, failed: failed))
+        return .success(MotionTarget(previous, .inclusive, shortfall: shortfall))
     }
 
     private static func wordForward(_ start: Int, _ count: Int, big: Bool,
                                     _ context: MotionContext) -> Outcome {
-        let b = context.buffer
-        let eol = context.operatorPending
         var p = start
-        var ok = true
-        words: for remaining in stride(from: count - 1, through: 0, by: -1) {
+        let ok = fwdWord(&p, count, big: big, eol: context.operatorPending, context.buffer)
+        return adjusted(p, from: start, .exclusive, shortfall: ok ? nil : .beepWithoutOperator,
+                        context.buffer)
+    }
+
+    /// Vim's `fwd_word`. False when it started at the end of the text.
+    static func fwdWord(_ p: inout Int, _ count: Int, big: Bool, eol: Bool,
+                        _ b: VimBuffer) -> Bool {
+        for remaining in stride(from: count - 1, through: 0, by: -1) {
             let startClass = b.wordClass(p, big)
             let onLastLine = b.lineIndex(of: p) == b.lineCount - 1
             var step = b.inc(&p)
-            if step == -1 || (step >= 1 && onLastLine) {
-                ok = false
-                break
-            }
-            if step >= 1 && eol && remaining == 0 { break }
+            if step == -1 || (step >= 1 && onLastLine) { return false }
+            if step >= 1 && eol && remaining == 0 { return true }
             if startClass != .blank {
                 while b.wordClass(p, big) == startClass {
                     step = b.inc(&p)
-                    if step == -1 || (step >= 1 && eol && remaining == 0) { break words }
+                    if step == -1 || (step >= 1 && eol && remaining == 0) { return true }
                 }
             }
             while b.wordClass(p, big) == .blank {
                 if b.isEmptyLineStart(p) { break }
                 step = b.inc(&p)
-                if step == -1 || (step >= 1 && eol && remaining == 0) { break words }
+                if step == -1 || (step >= 1 && eol && remaining == 0) { return true }
             }
         }
-        return adjusted(p, from: start, .exclusive, failed: !ok, b)
+        return true
     }
 
     private static func wordBackward(_ start: Int, _ count: Int, big: Bool,
@@ -405,7 +439,7 @@ enum Motions {
         var p = start
         for _ in 0..<count {
             if b.dec(&p) == -1 {
-                return .success(MotionTarget(p, .exclusive, failed: true))
+                return .success(MotionTarget(p, .exclusive, shortfall: .cancelOperator))
             }
             var onEmptyLine = false
             while b.wordClass(p, big) == .blank {
@@ -425,36 +459,45 @@ enum Motions {
         return .success(MotionTarget(p, .exclusive))
     }
 
-    private static func wordEnd(_ start: Int, _ count: Int, big: Bool,
-                                _ b: VimBuffer) -> Outcome {
+    /// `e`, or with `stop`, the target `cw` uses: a cursor already on the end of a word
+    /// stays there.
+    static func wordEnd(_ start: Int, _ count: Int, big: Bool, stop: Bool = false,
+                        _ b: VimBuffer) -> Outcome {
         var p = start
-        var ok = true
-        words: for _ in 0..<count {
+        let ok = endWord(&p, count, big: big, stop: stop, empty: false, b)
+        return adjusted(p, from: start, .inclusive, shortfall: ok ? nil : .beepWithoutOperator, b)
+    }
+
+    /// Vim's `end_word`. With `empty`, it stops at an empty line. False when it ran into the
+    /// end of the text.
+    static func endWord(_ p: inout Int, _ count: Int, big: Bool, stop: Bool, empty: Bool,
+                        _ b: VimBuffer) -> Bool {
+        var stop = stop
+        for _ in 0..<count {
             let startClass = b.wordClass(p, big)
-            if b.inc(&p) == -1 {
-                ok = false
-                break
-            }
+            if b.inc(&p) == -1 { return false }
             if b.wordClass(p, big) == startClass && startClass != .blank {
-                if b.skip(startClass, forward: true, big, &p) {
-                    ok = false
-                    break
+                if b.skip(startClass, forward: true, big, &p) { return false }
+                _ = b.dec(&p)
+            } else if !stop || startClass == .blank {
+                var reachedEmptyLine = false
+                while b.wordClass(p, big) == .blank {
+                    if empty && b.isEmptyLineStart(p) {
+                        reachedEmptyLine = true
+                        break
+                    }
+                    if b.inc(&p) == -1 { return false }
+                }
+                if !reachedEmptyLine {
+                    if b.skip(b.wordClass(p, big), forward: true, big, &p) { return false }
+                    _ = b.dec(&p)
                 }
             } else {
-                while b.wordClass(p, big) == .blank {
-                    if b.inc(&p) == -1 {
-                        ok = false
-                        break words
-                    }
-                }
-                if b.skip(b.wordClass(p, big), forward: true, big, &p) {
-                    ok = false
-                    break
-                }
+                _ = b.dec(&p)
             }
-            _ = b.dec(&p)
+            stop = false
         }
-        return adjusted(p, from: start, .inclusive, failed: !ok, b)
+        return true
     }
 
     private static func wordEndBackward(_ start: Int, _ count: Int, big: Bool,
@@ -463,7 +506,7 @@ enum Motions {
         for _ in 0..<count {
             let startClass = b.wordClass(p, big)
             if b.dec(&p) == -1 {
-                return .success(MotionTarget(p, .inclusive, failed: true))
+                return .success(MotionTarget(p, .inclusive, shortfall: .cancelOperator))
             }
             if startClass != .blank {
                 while b.wordClass(p, big) == startClass {
@@ -511,6 +554,15 @@ enum Motions {
 
     private static func sentence(forward: Bool, _ count: Int, from cursor: Int,
                                  _ b: VimBuffer) -> Outcome {
+        guard let pos = findSentence(forward: forward, count, from: cursor, b) else {
+            return .failure(MotionFailure())
+        }
+        return adjusted(pos, from: cursor, .exclusive, shortfall: nil, b)
+    }
+
+    /// Vim's `findsent`: the start of the sentence `count` sentences away, or nil.
+    static func findSentence(forward: Bool, _ count: Int, from cursor: Int,
+                             _ b: VimBuffer) -> Int? {
         let step: (inout Int) -> Int = forward ? { b.incl(&$0) } : { b.decl(&$0) }
         var pos = cursor
         var remaining = count
@@ -526,7 +578,7 @@ enum Motions {
                 found = forward
             } else if forward, b.isLineStart(pos), b.startsParagraph(b.lineIndex(of: pos)) {
                 let line = b.lineIndex(of: pos)
-                guard line + 1 < b.lineCount else { return .failure(MotionFailure()) }
+                guard line + 1 < b.lineCount else { return nil }
                 pos = b.lineStart(line + 1)
                 found = true
             } else if !forward {
@@ -535,7 +587,7 @@ enum Motions {
             if !found {
                 backOverSentenceEnd(&pos, forward: forward, b)
                 switch sentenceEnd(&pos, forward: forward, remaining: remaining, step, b) {
-                case .failed: return .failure(MotionFailure())
+                case .failed: return nil
                 case .hitEnd: noSkip = true
                 case .found: break
                 }
@@ -545,13 +597,13 @@ enum Motions {
             }
             if pos == previous {
                 if step(&pos) == -1 {
-                    if remaining > 0 { return .failure(MotionFailure()) }
+                    if remaining > 0 { return nil }
                     break
                 }
                 remaining += 1
             }
         }
-        return adjusted(pos, from: cursor, .exclusive, failed: false, b)
+        return pos
     }
 
     private static let sentenceEnders: Set<UInt16> = [0x2E, 0x21, 0x3F]
