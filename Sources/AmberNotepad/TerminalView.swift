@@ -36,9 +36,14 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     let status = NSTextField(labelWithString: "Drafts save automatically")
     let commandLine = NSTextField()
     var commandSubmitted: ((String) -> Void)?
+    let preview = MarkdownPreviewView()
+    private(set) var isShowingMarkdown = false
+    private var sourceSelection = NSRange(location: 0, length: 0)
+    private var sourceTop = (character: 0, offset: CGFloat(0))
     private let screen = NSView()
     private let header = NSView()
     private let scroll = NSScrollView()
+    private let previewScroll = NSScrollView()
     private let texture = ScreenTexture()
 
     override init(frame: NSRect) {
@@ -64,6 +69,11 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         position.setAccessibilityLabel("Cursor position")
         configureEditor()
         screen.addSubview(scroll)
+        Self.configure(previewScroll)
+        previewScroll.documentView = preview
+        previewScroll.isHidden = true
+        screen.addSubview(previewScroll)
+        preview.commandRequested = { [weak self] in self?.beginCommand() }
         status.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         status.textColor = Phosphor.amber.withAlphaComponent(0.65)
         status.lineBreakMode = .byTruncatingMiddle
@@ -116,8 +126,74 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     private func endCommand() {
         commandLine.isHidden = true
         status.isHidden = false
+        if isShowingMarkdown {
+            window?.makeFirstResponder(preview)
+            return
+        }
         if textView.mode != .normal { textView.setMode(.normal) }
         window?.makeFirstResponder(textView)
+    }
+
+    /// Shows `text` read-only in place of the editor, which keeps its text, undo and position.
+    func showMarkdown(_ text: NSAttributedString) {
+        if !isShowingMarkdown {
+            sourceSelection = textView.selectedRange()
+            sourceTop = topOfSource()
+        }
+        dismissCommandLine()
+        isShowingMarkdown = true
+        preview.textStorage?.setAttributedString(text)
+        scroll.isHidden = true
+        previewScroll.isHidden = false
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        previewScroll.contentView.scroll(to: .zero)
+        previewScroll.reflectScrolledClipView(previewScroll.contentView)
+        window?.makeFirstResponder(preview)
+    }
+
+    func showSource() {
+        guard isShowingMarkdown else { return }
+        dismissCommandLine()
+        isShowingMarkdown = false
+        previewScroll.isHidden = true
+        scroll.isHidden = false
+        window?.makeFirstResponder(textView)
+        if textView.vimEnabled { textView.setMode(.normal) }
+        textView.setSelectedRange(sourceSelection)
+        restoreTopOfSource(sourceTop)
+    }
+
+    private func dismissCommandLine() {
+        commandLine.stringValue = ""
+        commandLine.isHidden = true
+        status.isHidden = false
+    }
+
+    /// The source's top line as a character and an offset into its line, so it can be
+    /// found again after the text re-wraps at a new window width.
+    private func topOfSource() -> (character: Int, offset: CGFloat) {
+        let y = scroll.contentView.bounds.minY - textView.textContainerOrigin.y
+        guard let layout = textView.layoutManager, let container = textView.textContainer,
+              layout.numberOfGlyphs > 0 else { return (0, y) }
+        let glyph = layout.glyphIndex(for: NSPoint(x: 0, y: max(y, 0)), in: container)
+        let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return (layout.characterIndexForGlyph(at: glyph), y - line.minY)
+    }
+
+    private func restoreTopOfSource(_ top: (character: Int, offset: CGFloat)) {
+        var y = top.offset
+        if let layout = textView.layoutManager, layout.numberOfGlyphs > 0 {
+            let glyph = min(layout.glyphIndexForCharacter(at: top.character),
+                            layout.numberOfGlyphs - 1)
+            y += layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
+        }
+        let clip = scroll.contentView
+        let bottom = max(textView.frame.height - clip.bounds.height, 0)
+        clip.scroll(to: NSPoint(
+            x: 0, y: min(max(y + textView.textContainerOrigin.y, 0), bottom)
+        ))
+        scroll.reflectScrolledClipView(clip)
     }
 
     private func configureEditor() {
@@ -167,13 +243,17 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         ]
         textView.setAccessibilityLabel("Document text")
         scroll.documentView = textView
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = false
-        scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
-        scroll.drawsBackground = false
-        scroll.scrollerStyle = .overlay
-        scroll.scrollerKnobStyle = .light
+        Self.configure(scroll)
+    }
+
+    private static func configure(_ scrollView: NSScrollView) {
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.scrollerStyle = .overlay
+        scrollView.scrollerKnobStyle = .light
     }
 
     override func layout() {
@@ -202,6 +282,13 @@ final class TerminalView: NSView, NSTextFieldDelegate {
             height: max(textView.frame.height, scroll.contentSize.height)
         ))
         textView.sizeToFit()
+        previewScroll.frame = scroll.frame
+        preview.minSize = NSSize(width: 0, height: previewScroll.contentSize.height)
+        preview.setFrameSize(NSSize(
+            width: previewScroll.contentSize.width,
+            height: max(preview.frame.height, previewScroll.contentSize.height)
+        ))
+        preview.sizeToFit()
         status.frame = NSRect(x: 8, y: 4, width: size.width - 16, height: 15)
         commandLine.frame = status.frame
         texture.frame = scroll.frame

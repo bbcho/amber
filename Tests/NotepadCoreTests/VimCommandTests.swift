@@ -109,6 +109,17 @@ final class VimCommandTests: XCTestCase {
         }
     }
 
+    func test_mm_toggles_the_markdown_preview() throws {
+        XCTAssertEqual(try VimCommand.parse("mm"), .markdown)
+        XCTAssertEqual(try VimCommand.parse(":mm"), .markdown)
+        XCTAssertThrowsError(try VimCommand.parse("mm x")) { error in
+            XCTAssertEqual(error.localizedDescription, "E488: Trailing characters: x")
+        }
+        XCTAssertThrowsError(try VimCommand.parse("mm!")) { error in
+            XCTAssertEqual(error.localizedDescription, "E492: Not an editor command: mm!")
+        }
+    }
+
     func test_empty_input_reports_an_empty_command() {
         for input in ["", " \t\n", ":", " : \t"] {
             XCTAssertThrowsError(try VimCommand.parse(input)) { error in

@@ -215,6 +215,82 @@ final class WorkspaceTests: XCTestCase {
         }
     }
 
+    func test_mm_toggles_rendered_view_and_status() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let editor = try app.createWindow()
+            editor.terminal.textView.insertText(
+                "# Hi", replacementRange: NSRange(location: 0, length: 0)
+            )
+            app.execute(":mm", in: editor)
+            XCTAssertTrue(editor.isShowingMarkdown)
+            XCTAssertTrue(editor.terminal.status.stringValue.hasPrefix("[RENDERED]"))
+            XCTAssertEqual(editor.terminal.position.stringValue, "Rendered")
+            XCTAssertEqual(editor.terminal.preview.string, "Hi")
+            app.execute(":mm", in: editor)
+            XCTAssertFalse(editor.isShowingMarkdown)
+            XCTAssertEqual(editor.terminal.textView.string, "# Hi")
+            XCTAssertFalse(editor.terminal.status.stringValue.contains("[RENDERED]"))
+        }
+    }
+
+    func test_editing_another_file_leaves_rendered_view() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let editor = try app.createWindow()
+            let other = directory.appendingPathComponent("other.md")
+            try "new".write(to: other, atomically: true, encoding: .utf8)
+            app.execute(":mm", in: editor)
+            app.execute(":e " + other.path, in: editor)
+            XCTAssertFalse(editor.isShowingMarkdown)
+            XCTAssertEqual(editor.terminal.textView.string, "new")
+            XCTAssertEqual(editor.terminal.textView.enclosingScrollView?.isHidden, false)
+        }
+    }
+
+    func test_menu_toggle_works_with_vim_off() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let editor = try app.createWindow()
+            editor.terminal.textView.vimEnabled = false
+            let item = NSMenuItem(
+                title: "Rendered Markdown", action: #selector(AppDelegate.toggleMarkdown(_:)),
+                keyEquivalent: "m"
+            )
+            app.toggleMarkdown(item)
+            XCTAssertTrue(editor.isShowingMarkdown)
+            XCTAssertTrue(app.validateMenuItem(item))
+            XCTAssertEqual(item.state, .on)
+            app.toggleMarkdown(item)
+            XCTAssertFalse(editor.isShowingMarkdown)
+            XCTAssertTrue(app.validateMenuItem(item))
+            XCTAssertEqual(item.state, .off)
+        }
+    }
+
+    func test_menu_check_mark_follows_the_active_window() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let first = try app.createWindow()
+            let second = try app.createWindow()
+            let item = NSMenuItem(
+                title: "Rendered Markdown", action: #selector(AppDelegate.toggleMarkdown(_:)),
+                keyEquivalent: "m"
+            )
+            // Without a key window in tests, the most recent window is the active one.
+            first.toggleMarkdown()
+            XCTAssertTrue(app.validateMenuItem(item))
+            XCTAssertEqual(item.state, .off)
+            second.toggleMarkdown()
+            XCTAssertTrue(app.validateMenuItem(item))
+            XCTAssertEqual(item.state, .on)
+        }
+    }
+
     @MainActor private func workspace() throws -> (AppDelegate, URL) {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory

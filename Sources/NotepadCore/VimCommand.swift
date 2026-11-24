@@ -7,6 +7,7 @@ public enum VimCommand: Equatable {
     case exit
     case edit(path: String?, force: Bool)
     case newWindow
+    case markdown
 
     public static func parse(_ input: String) throws -> VimCommand {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -47,6 +48,9 @@ public enum VimCommand: Equatable {
         case "new":
             guard !force else { throw VimCommandError.unknown(token) }
             command = .newWindow
+        case "mm":
+            guard !force else { throw VimCommandError.unknown(token) }
+            command = .markdown
         default:
             throw VimCommandError.unknown(token)
         }

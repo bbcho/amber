@@ -17,6 +17,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
 
     var documentURL: URL? { session.url }
     var hasUnsavedChanges: Bool { session.isDirty }
+    var isShowingMarkdown: Bool { terminal.isShowingMarkdown }
 
     init(recoveryURL: URL) throws {
         let restoredSession = DocumentSession(recoveryURL: recoveryURL)
@@ -74,6 +75,15 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     func toggleVim(_ sender: NSMenuItem) {
         terminal.textView.vimEnabled.toggle()
         sender.state = terminal.textView.vimEnabled ? .on : .off
+        updateStatus()
+    }
+
+    func toggleMarkdown() {
+        if terminal.isShowingMarkdown {
+            terminal.showSource()
+        } else {
+            terminal.showMarkdown(MarkdownRenderer.render(terminal.textView.string))
+        }
         updateStatus()
     }
 
@@ -220,13 +230,18 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         }
         let column = (lines.last?.count ?? 0) + 1
         terminal.position.stringValue = "Ln \(line)   Col \(column)"
-        let mode = terminal.textView.vimEnabled ? "[\(terminal.textView.mode.rawValue)]  " : ""
+        var mode = terminal.textView.vimEnabled ? "[\(terminal.textView.mode.rawValue)]  " : ""
+        if terminal.isShowingMarkdown {
+            terminal.position.stringValue = "Rendered"
+            mode = "[RENDERED]  "
+        }
         terminal.status.stringValue = mode + (commandMessage ?? saveMessage)
     }
 
     private func showDocument() {
         autosaveTimer?.invalidate()
         commandMessage = nil
+        terminal.showSource()
         terminal.textView.string = session.file.text
         terminal.textView.setMode(terminal.textView.vimEnabled ? .normal : .insert)
         terminal.textView.undoManager?.removeAllActions()
