@@ -42,12 +42,16 @@ public struct VimOptions: Equatable {
     private static let nrformatValues = ["alpha", "octal", "hex", "bin", "unsigned", "blank"]
 
     private static let descriptors: [Descriptor] = [
-        Descriptor(name: "tabstop", short: "ts", kind: .number(\.tabstop, minimum: 1, maximum: 9999)),
-        Descriptor(name: "shiftwidth", short: "sw", kind: .number(\.shiftwidth, minimum: 0, maximum: 1_000_000_000)),
-        Descriptor(name: "softtabstop", short: "sts", kind: .number(\.softtabstop, minimum: 0, maximum: 1_000_000_000)),
+        Descriptor(name: "tabstop", short: "ts",
+                   kind: .number(\.tabstop, minimum: 1, maximum: 9999)),
+        Descriptor(name: "shiftwidth", short: "sw",
+                   kind: .number(\.shiftwidth, minimum: 0, maximum: 1_000_000_000)),
+        Descriptor(name: "softtabstop", short: "sts",
+                   kind: .number(\.softtabstop, minimum: 0, maximum: 1_000_000_000)),
         Descriptor(name: "expandtab", short: "et", kind: .flag(\.expandtab)),
         Descriptor(name: "autoindent", short: "ai", kind: .flag(\.autoindent)),
-        Descriptor(name: "textwidth", short: "tw", kind: .number(\.textwidth, minimum: 0, maximum: 1_000_000_000)),
+        Descriptor(name: "textwidth", short: "tw",
+                   kind: .number(\.textwidth, minimum: 0, maximum: 1_000_000_000)),
         Descriptor(name: "nrformats", short: "nf",
                    kind: .list(\.nrformats, allowed: nrformatValues)),
         Descriptor(name: "ignorecase", short: "ic", kind: .flag(\.ignorecase)),
@@ -58,9 +62,11 @@ public struct VimOptions: Equatable {
         Descriptor(name: "autoread", short: "ar", kind: .flag(\.autoread)),
         Descriptor(name: "clipboard", short: "cb",
                    kind: .list(\.clipboard, allowed: ["unnamed", "unnamedplus"])),
-        Descriptor(name: "scrolloff", short: "so", kind: .number(\.scrolloff, minimum: 0, maximum: 1_000_000_000)),
+        Descriptor(name: "scrolloff", short: "so",
+                   kind: .number(\.scrolloff, minimum: 0, maximum: 1_000_000_000)),
         Descriptor(name: "showcmd", short: "sc", kind: .flag(\.showcmd)),
-        Descriptor(name: "timeoutlen", short: "tm", kind: .number(\.timeoutlen, minimum: 0, maximum: 1_000_000_000)),
+        Descriptor(name: "timeoutlen", short: "tm",
+                   kind: .number(\.timeoutlen, minimum: 0, maximum: 1_000_000_000)),
         Descriptor(name: "number", short: "nu", kind: .flag(\.number)),
         Descriptor(name: "relativenumber", short: "rnu", kind: .flag(\.relativenumber)),
         Descriptor(name: "wrap", short: "wrap", kind: .flag(\.wrap)),
@@ -193,7 +199,9 @@ public struct VimOptions: Equatable {
             case "^": computed = current.multipliedReportingOverflow(by: number)
             default: computed = (number, false)
             }
-            guard !computed.overflow, computed.partialValue <= maximum else { throw invalid(argument) }
+            guard !computed.overflow, computed.partialValue <= maximum else {
+                throw invalid(argument)
+            }
             guard computed.partialValue >= minimum else {
                 throw VimError("E487: Argument must be positive: \(argument)")
             }
