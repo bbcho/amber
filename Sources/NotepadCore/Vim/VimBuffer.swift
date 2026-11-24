@@ -4,8 +4,8 @@ import Foundation
 /// `NSString`, which is retained rather than copied.
 ///
 /// A line is an `NSString` logical line: it ends at LF, CRLF, CR, U+2028, U+2029 or U+0085.
-/// Like a text view, the buffer has a final empty line when the text is empty or ends with a
-/// line break, so every offset from 0 through `length` belongs to exactly one line.
+/// As in Vim, a final line break ends the last line rather than starting another, and empty
+/// text is one empty line. An offset at the very end belongs to the last line.
 public struct VimBuffer {
     public enum WordClass: Equatable {
         case blank, word, punctuation
@@ -25,16 +25,8 @@ public struct VimBuffer {
             position = end
             starts.append(end)
         }
-        if text.length > 0 && !Self.endsWithBreak(text) { starts.removeLast() }
+        if text.length > 0 { starts.removeLast() }
         lineStarts = starts
-    }
-
-    private static func endsWithBreak(_ text: NSString) -> Bool {
-        var contentsEnd = 0
-        var end = 0
-        text.getLineStart(nil, end: &end, contentsEnd: &contentsEnd,
-                          for: NSRange(location: text.length - 1, length: 0))
-        return contentsEnd < end
     }
 
     public var length: Int { text.length }

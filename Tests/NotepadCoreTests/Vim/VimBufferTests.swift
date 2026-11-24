@@ -15,12 +15,11 @@ final class VimBufferTests: XCTestCase {
 
     func test_crlf_is_one_line_break() {
         let b = buffer("ab\r\ncd\r\n")
-        XCTAssertEqual(b.lineCount, 3)
+        XCTAssertEqual(b.lineCount, 2)
         XCTAssertEqual(b.lineRange(at: 0), NSRange(location: 0, length: 4))
         XCTAssertEqual(b.contentRange(at: 0), NSRange(location: 0, length: 2))
         XCTAssertEqual(b.lineRange(at: 1), NSRange(location: 4, length: 4))
         XCTAssertEqual(b.contentRange(at: 1), NSRange(location: 4, length: 2))
-        XCTAssertEqual(b.lineRange(at: 2), NSRange(location: 8, length: 0))
     }
 
     func test_cr_and_line_separator_also_end_lines() {
@@ -38,11 +37,15 @@ final class VimBufferTests: XCTestCase {
         XCTAssertEqual(b.contentRange(at: 0), NSRange(location: 0, length: 0))
     }
 
-    func test_text_ending_in_a_break_has_a_final_empty_line() {
+    func test_a_final_line_break_ends_the_last_line_without_adding_one() {
         let b = buffer("a\n")
-        XCTAssertEqual(b.lineCount, 2)
-        XCTAssertEqual(b.lineRange(at: 1), NSRange(location: 2, length: 0))
-        XCTAssertEqual(b.lineIndex(of: 2), 1)
+        XCTAssertEqual(b.lineCount, 1)
+        XCTAssertEqual(b.lineRange(at: 0), NSRange(location: 0, length: 2))
+        XCTAssertEqual(b.contentRange(at: 0), NSRange(location: 0, length: 1))
+        XCTAssertEqual(b.lineIndex(of: 2), 0)
+        XCTAssertEqual(buffer("a\nb").lineCount, 2)
+        XCTAssertEqual(buffer("a\n\n").lineCount, 2)
+        XCTAssertEqual(buffer("a\r\n").lineCount, 1)
     }
 
     func test_line_index_of_an_offset_finds_its_line() {
