@@ -185,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             case let .edit(path, force): editor.edit(path: path, force: force)
             case .newWindow: try createWindow()
             case .markdown: editor.toggleMarkdown()
+            case .checkTime: for candidate in editors { candidate.checkDisk() }
             }
         } catch { editor.showCommandMessage(error.localizedDescription) }
     }

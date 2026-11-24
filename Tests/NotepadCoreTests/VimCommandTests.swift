@@ -120,6 +120,15 @@ final class VimCommandTests: XCTestCase {
         }
     }
 
+    func test_checktime_checks_files_for_outside_changes() throws {
+        for input in ["checkt", "checkti", "checktim", "checktime", ":checktime"] {
+            XCTAssertEqual(try VimCommand.parse(input), .checkTime, input)
+        }
+        XCTAssertThrowsError(try VimCommand.parse("checktime now")) { error in
+            XCTAssertEqual(error.localizedDescription, "E488: Trailing characters: now")
+        }
+    }
+
     func test_empty_input_reports_an_empty_command() {
         for input in ["", " \t\n", ":", " : \t"] {
             XCTAssertThrowsError(try VimCommand.parse(input)) { error in

@@ -9,6 +9,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private let session: DocumentSession
     private var autosaveTimer: Timer?
     private var saveMessage = "Draft recovery is on"
+    private var diskTimer: Timer?
     private var commandMessage: String?
     private var discardOnClose = false
     var onClose: ((EditorWindow) -> Void)?
@@ -55,6 +56,34 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         window.contentView = terminal
         window.center()
         showDocument()
+        diskTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkDisk() }
+        }
+    }
+
+    /// Shows changes made to the file outside Amber, such as an agent's edits, like Vim's
+    /// `autoread`: clean text reloads, and unsaved edits are never replaced.
+    func checkDisk() {
+        do {
+            switch try session.checkDisk() {
+            case .unchanged:
+                return
+            case .reloaded:
+                terminal.replaceSourceText(session.file.text)
+                autosaveTimer?.invalidate()
+                if terminal.isShowingMarkdown {
+                    terminal.updateMarkdown(MarkdownRenderer.render(session.file.text))
+                }
+                saveMessage = "Reloaded: the file changed outside Amber"
+            case .conflict:
+                saveMessage = "File changed outside this app. Draft kept. Press ⌘S to resolve."
+            case .missing:
+                saveMessage = "File was deleted outside this app. Your text is kept."
+            }
+            updateStatus()
+        } catch {
+            showCommandMessage("Could not reload: \(error.localizedDescription)")
+        }
     }
 
     func show() {
@@ -189,7 +218,10 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         } catch { present(error); return false }
     }
 
-    func windowWillClose(_ notification: Notification) { onClose?(self) }
+    func windowWillClose(_ notification: Notification) {
+        diskTimer?.invalidate()
+        onClose?(self)
+    }
 
     func textDidChange(_ notification: Notification) {
         commandMessage = nil
