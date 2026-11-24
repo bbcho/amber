@@ -71,7 +71,8 @@ public final class DocumentSession {
     /// Reloads the file when it changed outside Amber and there are no unsaved edits.
     /// Bytes equal to Amber's last save are not a change, so autosave never triggers this.
     /// With `waitForQuiet`, a change must look the same on two checks in a row, so a file
-    /// still being written in pieces is never loaded half-written.
+    /// still being written in quick pieces is not loaded half-written. A writer that pauses
+    /// longer than one check between pieces can still be caught mid-write.
     public func checkDisk(waitForQuiet: Bool = false) throws -> DiskChange {
         guard let url else { return .unchanged }
         guard let current = Self.stamp(url) else { return .missing }

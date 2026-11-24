@@ -169,6 +169,7 @@ final class LiveReloadTests: XCTestCase {
             let editor = try app.createWindow(fileURL: file)
             let view = editor.terminal.textView
             view.setSelectedRange(NSRange(location: (view.string as NSString).length, length: 0))
+            view.scrollRangeToVisible(view.selectedRange())
 
             let grown = lines + (301...350).map { "line \($0)" }
             try grown.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
@@ -177,6 +178,50 @@ final class LiveReloadTests: XCTestCase {
             let lastLine = (view.string as NSString).range(of: "line 350")
             XCTAssertEqual(view.selectedRange().location, NSMaxRange(lastLine))
             XCTAssertEqual(view.visibleRect.maxY, view.bounds.maxY)
+        }
+    }
+
+    func test_follow_works_when_the_file_ends_with_a_line_break() async throws {
+        try await MainActor.run {
+            let lines = (1...300).map { "line \($0)\n" }
+            let (app, directory, file) = try workspace(lines.joined())
+            defer { cleanup(app, directory) }
+            let editor = try app.createWindow(fileURL: file)
+            let view = editor.terminal.textView
+            let lastText = (view.string as NSString).range(of: "line 300")
+            view.setSelectedRange(NSRange(location: lastText.location, length: 0))
+            view.scrollRangeToVisible(view.selectedRange())
+
+            let grown = lines + (301...350).map { "line \($0)\n" }
+            try grown.joined().write(to: file, atomically: true, encoding: .utf8)
+            editor.checkDisk()
+
+            let newLast = (view.string as NSString).range(of: "line 350")
+            XCTAssertEqual(view.selectedRange().location, newLast.location)
+            XCTAssertEqual(view.visibleRect.maxY, view.bounds.maxY)
+        }
+    }
+
+    func test_a_cursor_on_the_last_line_does_not_follow_while_scrolled_away() async throws {
+        try await MainActor.run {
+            let lines = (1...300).map { "line \($0)" }
+            let (app, directory, file) = try workspace(lines.joined(separator: "\n"))
+            defer { cleanup(app, directory) }
+            let editor = try app.createWindow(fileURL: file)
+            let view = editor.terminal.textView
+            let end = (view.string as NSString).length
+            view.setSelectedRange(NSRange(location: end, length: 0))
+            view.scrollRangeToVisible(NSRange(location: 0, length: 0))
+            let top = view.visibleRect.minY
+
+            let grown = lines + ["line 301"]
+            try grown.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+            editor.checkDisk()
+
+            XCTAssertEqual(view.visibleRect.minY, top)
+            XCTAssertLessThan(top, 100)
+            let line300 = (view.string as NSString).range(of: "line 300\n")
+            XCTAssertEqual(view.selectedRange().location, line300.location + 8)
         }
     }
 

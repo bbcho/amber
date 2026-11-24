@@ -116,7 +116,11 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     ) -> Bool {
         guard control === commandLine, !commandLine.isHidden else { return false }
         if commandSelector == #selector(NSResponder.insertTab(_:)) {
-            completeCommandLine(textView)
+            completeCommandLine(textView, step: 1)
+            return true
+        }
+        if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+            completeCommandLine(textView, step: -1)
             return true
         }
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
@@ -135,15 +139,17 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         completions = []
     }
 
-    /// The first Tab inserts the first match; later Tabs cycle, as Vim's command line does.
-    private func completeCommandLine(_ editor: NSTextView) {
+    /// As in Vim's command line: the first Tab inserts the first match, later Tabs cycle,
+    /// and one past the last match returns to what was typed. Shift-Tab cycles backwards.
+    private func completeCommandLine(_ editor: NSTextView, step: Int) {
         if let index = completions.firstIndex(of: editor.string) {
-            completionIndex = (index + 1) % completions.count
+            completionIndex = (index + step + completions.count) % completions.count
         } else {
-            completions = completeCommand?(editor.string) ?? []
-            completionIndex = 0
+            let matches = completeCommand?(editor.string) ?? []
+            guard !matches.isEmpty else { return }
+            completions = matches + [editor.string]
+            completionIndex = step > 0 ? 0 : matches.count - 1
         }
-        guard !completions.isEmpty else { return }
         editor.string = completions[completionIndex]
         commandLine.stringValue = editor.string
         editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
@@ -193,15 +199,18 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     }
 
     /// Replaces the editor's text as one undoable change, keeping the cursor's line and
-    /// column and the scroll position. Used when the file changes outside Amber. A cursor on
-    /// the last line follows it to the new last line, like `tail -f`.
+    /// column and the scroll position. Used when the file changes outside Amber. A visible
+    /// cursor on the last line of text follows it to the new last line, like `tail -f`.
     func replaceSourceText(_ text: String) {
         let old = textView.string as NSString
         let new = text as NSString
         let cursor = isShowingMarkdown
             ? sourceSelection.location : textView.selectedRange().location
         let position = Self.linePosition(of: min(cursor, old.length), in: old)
-        let follows = position.line == Self.linePosition(of: old.length, in: old).line
+        let lastLine = Self.linePosition(of: old.length, in: old).line
+        let onEmptyFinalLine = position.line == lastLine && lastLine != Self.lastTextLine(in: old)
+        let follows = position.line >= Self.lastTextLine(in: old)
+            && (isShowingMarkdown || isSourceOffsetVisible(min(cursor, old.length)))
         let origin = scroll.contentView.bounds.origin
         let whole = NSRange(location: 0, length: old.length)
         guard textView.shouldChangeText(in: whole, replacementString: text) else { return }
@@ -209,7 +218,10 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         textView.textStorage?.replaceCharacters(in: whole, with: replacement)
         textView.didChangeText()
         if textView.mode == .visual { textView.setMode(.normal) }
-        let line = follows ? Self.linePosition(of: new.length, in: new).line : position.line
+        let line: Int
+        if !follows { line = position.line }
+        else if onEmptyFinalLine { line = Self.linePosition(of: new.length, in: new).line }
+        else { line = Self.lastTextLine(in: new) }
         let moved = NSRange(
             location: Self.offset(line: line, column: position.column, in: new), length: 0
         )
@@ -238,6 +250,22 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         let bottom = max(preview.frame.height - clip.bounds.height, 0)
         clip.scroll(to: NSPoint(x: origin.x, y: wasAtBottom ? bottom : min(origin.y, bottom)))
         previewScroll.reflectScrolledClipView(clip)
+    }
+
+    /// The last line holding text: a final line break leaves an empty line after it.
+    private static func lastTextLine(in text: NSString) -> Int {
+        let last = linePosition(of: text.length, in: text).line
+        guard text.length > 0, let scalar = UnicodeScalar(text.character(at: text.length - 1)),
+              CharacterSet.newlines.contains(scalar) else { return last }
+        return max(last - 1, 0)
+    }
+
+    private func isSourceOffsetVisible(_ offset: Int) -> Bool {
+        guard let layout = textView.layoutManager, layout.numberOfGlyphs > 0 else { return true }
+        let glyph = min(layout.glyphIndexForCharacter(at: offset), layout.numberOfGlyphs - 1)
+        let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return line.offsetBy(dx: 0, dy: textView.textContainerOrigin.y)
+            .intersects(scroll.contentView.bounds)
     }
 
     private static func linePosition(

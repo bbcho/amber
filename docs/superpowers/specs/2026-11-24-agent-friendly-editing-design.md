@@ -6,8 +6,9 @@ after the recent-files and live-reload merge. Choices marked "my call" were stat
 ## Goals
 
 1. **Quiet reloads:** the background check reloads only after the file's date, size and
-   identity have stayed the same for one extra check (0.5 s). An agent writing in pieces
-   never shows a half-written file. `:checktime` still reloads immediately. My call: one
+   identity have stayed the same for one extra check (0.5 s). An agent writing in quick
+   pieces doesn't show a half-written file; a writer that pauses longer can still be caught
+   mid-write. `:checktime` still reloads immediately. My call: one
    extra check is the shortest wait that skips a write still in progress.
 2. **Follow mode:** if the cursor is on the last line when an outside change arrives, it
    stays on the new last line and the view keeps it visible, like `tail -f`. The rendered

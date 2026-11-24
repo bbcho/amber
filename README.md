@@ -37,8 +37,8 @@ Each window checks its file twice a second, like Vim's `autoread`. When another 
 an agent changes the file and you have no unsaved edits, Amber reloads it, keeping your
 cursor's line and column and your scroll position, and the rendered Markdown view updates
 too. Amber waits until the file has stopped changing for half a second, so a file still
-being written is never shown half-done. If your cursor is on the last line, it follows new
-text added at the end, like `tail -f`. The reload is one undo step. Undoing it shows your earlier text again but does not
+being written usually isn't shown half-done. If your cursor is on the last line of text and in view,
+it follows new text added at the end, like `tail -f`. The reload is one undo step. Undoing it shows your earlier text again but does not
 write it over the file: autosave keeps it as a draft until you press Command-S. If you have
 unsaved edits, Amber keeps your text and
 shows that the file changed outside the app; press Command-S to choose what to keep.

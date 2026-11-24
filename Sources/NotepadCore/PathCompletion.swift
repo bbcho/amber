@@ -33,13 +33,18 @@ public enum PathCompletion {
             .filter { entry in
                 let entryName = entry.lastPathComponent
                 let visible = prefix.hasPrefix(".") || !entryName.hasPrefix(".")
-                return visible && entryName.hasPrefix(prefix)
+                // Mac file systems ignore case by default, so matching does too.
+                let matches = prefix.isEmpty || entryName.range(
+                    of: prefix, options: [.anchored, .caseInsensitive]
+                ) != nil
+                return visible && matches
             }
             .map { entry -> String in
-                let isFolder = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory
-                return entry.lastPathComponent + (isFolder == true ? "/" : "")
+                var isFolder: ObjCBool = false
+                FileManager.default.fileExists(atPath: entry.path, isDirectory: &isFolder)
+                return entry.lastPathComponent + (isFolder.boolValue ? "/" : "")
             }
-            .sorted()
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .map { head + folderPart + $0 }
     }
 }

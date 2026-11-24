@@ -11,9 +11,14 @@ final class PathCompletionTests: XCTestCase {
         try manager.createDirectory(
             at: directory.appendingPathComponent("notes"), withIntermediateDirectories: true
         )
-        for name in ["alpha.md", "alps.md", "beta.md", ".hidden.md", "notes/inner.md"] {
+        for name in ["alpha.md", "alps.md", "beta.md", "Capital.md", ".hidden.md",
+                     "notes/inner.md", "notes/.secret.md"] {
             try Data().write(to: directory.appendingPathComponent(name))
         }
+        try manager.createSymbolicLink(
+            at: directory.appendingPathComponent("linked"),
+            withDestinationURL: directory.appendingPathComponent("notes")
+        )
     }
 
     override func tearDownWithError() throws {
@@ -35,8 +40,17 @@ final class PathCompletionTests: XCTestCase {
     }
 
     func test_hidden_files_appear_only_for_a_dot_prefix() {
-        XCTAssertFalse(complete(":e ").contains(":e .hidden.md"))
+        XCTAssertEqual(complete(":e notes/"), [":e notes/inner.md"])
+        XCTAssertEqual(complete(":e notes/.s"), [":e notes/.secret.md"])
         XCTAssertEqual(complete(":e .h"), [":e .hidden.md"])
+    }
+
+    func test_matching_ignores_case_like_the_mac_file_system() {
+        XCTAssertEqual(complete(":e cap"), [":e Capital.md"])
+    }
+
+    func test_a_symlinked_folder_ends_with_a_slash() {
+        XCTAssertEqual(complete(":e lin"), [":e linked/"])
     }
 
     func test_every_path_command_completes_and_others_do_not() {
@@ -58,7 +72,9 @@ final class PathCompletionTests: XCTestCase {
             .filter { !$0.hasPrefix(".") }.sorted().first
         guard let first else { throw XCTSkip("Home folder has no visible entries") }
         let prefix = String(first.prefix(1))
-        XCTAssertTrue(complete(":e ~/" + prefix).allSatisfy { $0.hasPrefix(":e ~/" + prefix) })
+        let completed = complete(":e ~/" + prefix)
+        XCTAssertFalse(completed.isEmpty)
+        XCTAssertTrue(completed.allSatisfy { $0.hasPrefix(":e ~/") })
     }
 
     func test_an_empty_path_offers_recent_files() {

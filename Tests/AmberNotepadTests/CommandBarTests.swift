@@ -151,6 +151,10 @@ final class CommandBarTests: XCTestCase {
             field.doCommand(by: #selector(NSResponder.insertTab(_:)))
             XCTAssertEqual(terminal.commandLine.stringValue, ":e alps.md")
             field.doCommand(by: #selector(NSResponder.insertTab(_:)))
+            XCTAssertEqual(terminal.commandLine.stringValue, ":e a")
+            field.doCommand(by: #selector(NSResponder.insertBacktab(_:)))
+            XCTAssertEqual(terminal.commandLine.stringValue, ":e alps.md")
+            field.doCommand(by: #selector(NSResponder.insertBacktab(_:)))
             XCTAssertEqual(terminal.commandLine.stringValue, ":e alpha.md")
             XCTAssertTrue(window.firstResponder === field)
         }
