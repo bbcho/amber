@@ -3,7 +3,7 @@ import AppKit
 /// Turns Markdown source into amber-styled, read-only display text.
 @MainActor
 enum MarkdownRenderer {
-    private static let bodyFont = NSFont.systemFont(ofSize: 13)
+    static let bodyFont = NSFont.systemFont(ofSize: 13)
     private static let headingSizes: [CGFloat] = [24, 20, 17, 15, 13, 13]
     private static let indentStep: CGFloat = 20
     private static let maximumIndent: CGFloat = 240
