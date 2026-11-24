@@ -4,6 +4,13 @@ public enum VimMode: Equatable {
     case normal, insert, replace, visual, visualLine, visualBlock, operatorPending
     /// The footer prompt opened by `:`, `/` or `?`.
     case commandLine(Character)
+
+    public var isVisual: Bool {
+        switch self {
+        case .visual, .visualLine, .visualBlock: return true
+        case .normal, .insert, .replace, .operatorPending, .commandLine: return false
+        }
+    }
 }
 
 /// A position that survives edits elsewhere in the text: a line, counted from 0, and a
@@ -68,11 +75,31 @@ public struct LastVisual: Equatable {
     public var mode: VimMode
     public var anchor: Mark
     public var cursor: Mark
+    /// Whether `$` extended the selection to the end of every line.
+    public var toLineEnd: Bool
 
-    public init(mode: VimMode, anchor: Mark, cursor: Mark) {
+    public init(mode: VimMode, anchor: Mark, cursor: Mark, toLineEnd: Bool = false) {
         self.mode = mode
         self.anchor = anchor
         self.cursor = cursor
+        self.toLineEnd = toLineEnd
+    }
+}
+
+/// The size of a Visual selection that an operator used, which `.` and a count before `v`
+/// select again from the cursor (Vim's `redo_VIsual` and `resel_VIsual`).
+public struct VisualSize: Equatable {
+    public var mode: VimMode
+    public var lines: Int
+    /// Within one line in `visual` mode, the number of screen columns; over several lines,
+    /// the screen column of the last character. In `visualBlock` mode, the block's width.
+    /// `Int.max` when `$` took every line to its end. Unused in `visualLine` mode.
+    public var columns: Int
+
+    public init(mode: VimMode, lines: Int, columns: Int) {
+        self.mode = mode
+        self.lines = lines
+        self.columns = columns
     }
 }
 
@@ -83,11 +110,51 @@ public struct RecordedChange: Equatable {
     /// The keys after the count and register. An insert's keys include the typed text and
     /// the closing Escape.
     public var keys: [VimKey]
+    /// Set for a Visual operator, which `.` applies to a selection of this size.
+    public var visual: VisualSize?
 
-    public init(register: Character?, count: Int?, keys: [VimKey]) {
+    public init(register: Character?, count: Int?, keys: [VimKey], visual: VisualSize? = nil) {
         self.register = register
         self.count = count
         self.keys = keys
+        self.visual = visual
+    }
+}
+
+/// A Visual block: lines and screen columns, both inclusive. With `toLineEnd`, `end` is the
+/// end of the longest line.
+public struct VisualBlock: Equatable {
+    public var lines: ClosedRange<Int>
+    public var start: Int
+    public var end: Int
+    public var toLineEnd: Bool
+
+    public init(lines: ClosedRange<Int>, start: Int, end: Int, toLineEnd: Bool) {
+        self.lines = lines
+        self.start = start
+        self.end = end
+        self.toLineEnd = toLineEnd
+    }
+}
+
+/// A Visual block `I`, `A` or `c`, whose text Escape copies to the block's other lines.
+public struct BlockInsert: Equatable {
+    public enum Kind: Equatable {
+        case insert, append, change
+    }
+
+    public var kind: Kind
+    public var block: VisualBlock
+    /// Where typing started on the block's first line.
+    public var start: Int
+    /// Where the cursor goes after Escape; nil leaves it where Insert mode puts it.
+    public var cursorAfter: Int?
+
+    public init(kind: Kind, block: VisualBlock, start: Int, cursorAfter: Int?) {
+        self.kind = kind
+        self.block = block
+        self.start = start
+        self.cursorAfter = cursorAfter
     }
 }
 
@@ -101,10 +168,12 @@ public struct InsertSession: Equatable {
     public var count: Int
     /// What goes before each extra copy: a line break and indent after `o` and `O`.
     public var repeatPrefix: String
+    public var block: BlockInsert?
 
-    public init(count: Int = 1, repeatPrefix: String = "") {
+    public init(count: Int = 1, repeatPrefix: String = "", block: BlockInsert? = nil) {
         self.count = count
         self.repeatPrefix = repeatPrefix
+        self.block = block
     }
 }
 
@@ -130,6 +199,9 @@ public struct VimWindowState: Equatable {
     public var desiredColumn: Int?
     public var visualAnchor: Int?
     public var lastVisual: LastVisual?
+    /// Set while `.` repeats a Visual operator on a selection it made, which then leaves
+    /// `lastVisual` alone, as Vim keeps `gv` on the selection the user made.
+    public var repeatingVisual = false
     /// Marks `a`-`z`, `[`, `]`, and `'`, the position before the latest jump, which starts
     /// at the top of the text as in Vim.
     public var marks: [Character: Mark] = ["'": Mark(line: 0, column: 0)]
@@ -160,6 +232,8 @@ public struct VimSession: Equatable {
     public var lastFind: LastFind?
     /// The change `.` repeats.
     public var lastChange: RecordedChange?
+    /// The size of the selection the last Visual operator used, for a count before `v`.
+    public var lastVisualSize: VisualSize?
     public var recording: Recording?
 
     public init() {}

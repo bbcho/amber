@@ -10,8 +10,11 @@ struct VimRun {
     var effects: [VimEffect]
     /// The first visible line of the fake view after the keys.
     var top: Int
-    /// The text with the cursor written as `|`, or each selection written as `[...]`.
+    /// The text with the cursor written as `|` and each selection written as `[...]`. In a
+    /// selection the cursor is on the character after the `|`.
     var rendered: String
+    /// The selections the last key reported.
+    var selections: [NSRange]
 }
 
 /// Splits `marked` at its single `|` into the text and the cursor's UTF-16 offset.
@@ -22,16 +25,17 @@ func splitCursor(_ marked: String) -> (text: String, cursor: Int) {
     return (nsMarked.replacingCharacters(in: bar, with: ""), bar.location)
 }
 
+/// Writes `|` at the cursor and `[` and `]` around each non-empty selection. Where they meet,
+/// `[` comes before `|`, and `|` before `]`.
 func render(_ text: String, cursor: Int, selections: [NSRange]) -> String {
     let marked = NSMutableString(string: text)
-    let visible = selections.filter { $0.length > 0 }
-    guard !visible.isEmpty else {
-        marked.insert("|", at: min(cursor, marked.length))
-        return marked as String
+    var marks: [(offset: Int, order: Int, mark: String)] = [(min(cursor, marked.length), 1, "|")]
+    for range in selections where range.length > 0 {
+        marks.append((range.location, 0, "["))
+        marks.append((NSMaxRange(range), 2, "]"))
     }
-    for range in visible.sorted(by: { $0.location > $1.location }) {
-        marked.insert("]", at: NSMaxRange(range))
-        marked.insert("[", at: range.location)
+    for mark in marks.sorted(by: { ($0.offset, $0.order) > ($1.offset, $1.order) }) {
+        marked.insert(mark.mark, at: mark.offset)
     }
     return marked as String
 }
@@ -77,7 +81,8 @@ func runVim(_ before: String, _ keys: String, window: VimWindowState = VimWindow
     }
     let final = text as String
     return VimRun(text: final, window: window, session: session, effects: effects, top: top,
-                  rendered: render(final, cursor: window.cursor, selections: selections))
+                  rendered: render(final, cursor: window.cursor, selections: selections),
+                  selections: selections)
 }
 
 /// Asserts that `keys` turn `before` into `after`, both written with `|` for the cursor.

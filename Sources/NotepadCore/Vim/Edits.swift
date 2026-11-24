@@ -98,7 +98,7 @@ extension VimEngine {
             result.effects.append(.redo(input.count ?? 1))
             return
         case .repeatChange:
-            repeatChange(input, &result)
+            repeatChange(input, &result, buffer)
             return
         case .insert(let place):
             startInsert(place, input, &result, buffer)
@@ -119,13 +119,20 @@ extension VimEngine {
 
     /// `.` asks the adapter to feed the last change's keys back, with a new count or
     /// register in place of the recorded one. A recorded register `1` to `8` becomes the
-    /// next one, so `"1p..` puts registers 1, 2 and 3 (Vim's `redo-register`).
-    private static func repeatChange(_ input: CommandInput, _ result: inout VimResult) {
+    /// next one, so `"1p..` puts registers 1, 2 and 3 (Vim's `redo-register`). A Visual
+    /// change first selects the same amount of text from the cursor and keeps its count.
+    private static func repeatChange(_ input: CommandInput, _ result: inout VimResult,
+                                     _ b: VimBuffer) {
         guard var change = result.session.lastChange else {
             fail(&result)
             return
         }
-        if let count = input.count { change.count = count }
+        if let size = change.visual {
+            selectSameSize(size, count: 1, &result, b)
+            result.window.repeatingVisual = true
+        } else if let count = input.count {
+            change.count = count
+        }
         if let register = input.register {
             change.register = register
         } else if let number = change.register?.wholeNumberValue, (1...8).contains(number) {
@@ -274,6 +281,7 @@ extension VimEngine {
         result.window.insertSession = nil
         result.window.changeInProgress = nil
         result.window.desiredColumn = nil
+        if let block = session.block { finishBlockInsert(block, typedUpTo: cursor, &result, b) }
     }
 
     /// The text the `count - 1` extra copies add, typing the keys again from where the
@@ -303,7 +311,7 @@ extension VimEngine {
         return (text, lastLine)
     }
 
-    private static func lastCharacterLength(of text: String) -> Int {
+    static func lastCharacterLength(of text: String) -> Int {
         text.last.map { String($0).utf16.count } ?? 0
     }
 
@@ -367,8 +375,8 @@ extension VimEngine {
 
     // MARK: J and gJ
 
-    private static func join(spaces: Bool, _ input: CommandInput, _ result: inout VimResult,
-                             _ b: VimBuffer) -> Bool {
+    static func join(spaces: Bool, _ input: CommandInput, _ result: inout VimResult,
+                     _ b: VimBuffer) -> Bool {
         let line = b.lineIndex(of: result.window.cursor)
         var count = max(input.count ?? 2, 2)
         if line + count > b.lineCount {
@@ -408,9 +416,8 @@ extension VimEngine {
             putCharacters(value.text, count, put, &result, b)
         case .linewise:
             putLines(value.text, count, put, &result, b)
-        case .blockwise:
-            fail(&result)
-            return false
+        case .blockwise(let width):
+            putBlock(value.text, width: width, count, put, &result, b)
         }
         return true
     }
@@ -428,6 +435,13 @@ extension VimEngine {
         result.edits.append(TextEdit(range: NSRange(location: at, length: 0),
                                      replacement: inserted))
         let end = at + inserted.utf16.count
+        let start = b.mark(at: at)
+        let pieces = inserted.components(separatedBy: lineBreak)
+        let lastPiece = pieces[pieces.count - 1]
+        let lastColumn = (pieces.count == 1 ? start.column : 0) + lastPiece.utf16.count
+        setChangeMarks(start, Mark(line: start.line + pieces.count - 1,
+                                   column: max(lastColumn - lastCharacterLength(of: lastPiece), 0)),
+                       &result.window)
         if put.cursorAfter {
             let atLineEnd = b.isLineEnd(at) && !inserted.hasSuffix(lineBreak)
             result.window.cursor = atLineEnd ? end - lastCharacterLength(of: inserted) : end
@@ -466,6 +480,12 @@ extension VimEngine {
         }
         result.edits.append(TextEdit(range: NSRange(location: at, length: 0),
                                      replacement: inserted))
+        let firstLine = put.before ? line : line + 1
+        let last = block[block.count - 1]
+        setChangeMarks(Mark(line: firstLine, column: 0),
+                       Mark(line: firstLine + block.count - 1,
+                            column: max(last.utf16.count - lastCharacterLength(of: last), 0)),
+                       &result.window)
         guard put.cursorAfter else {
             result.window.cursor = firstNonBlank(of: block[0], lineStart: firstStart)
             return

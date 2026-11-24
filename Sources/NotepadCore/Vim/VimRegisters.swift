@@ -1,11 +1,13 @@
 import Foundation
 
-/// What a register holds. Linewise text always ends with a line break.
+/// What a register holds. Linewise text always ends with a line break. Blockwise text holds
+/// the block's lines separated by `\n`.
 public struct RegisterValue: Equatable {
     public enum Kind: Equatable {
         case characterwise
         case linewise
-        case blockwise([String])
+        /// `width` is the block's width in screen columns, which a put pads lines to.
+        case blockwise(width: Int)
     }
 
     public var text: String

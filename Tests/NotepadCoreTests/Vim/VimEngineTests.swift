@@ -84,15 +84,6 @@ final class VimEngineTests: XCTestCase {
         XCTAssertEqual(run.effects, [.failure])
     }
 
-    func test_visual_modes_leave_the_state_alone_until_they_are_built() {
-        var window = VimWindowState()
-        window.mode = .visual
-        let run = runVim("a|bc", "l", window: window)
-        XCTAssertEqual(run.window.cursor, 1)
-        XCTAssertEqual(run.window.mode, .visual)
-        XCTAssertEqual(run.effects, [])
-    }
-
     // MARK: Marks
 
     func test_backtick_returns_to_a_mark_and_quote_to_its_line() {

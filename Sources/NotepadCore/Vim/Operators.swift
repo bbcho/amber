@@ -133,7 +133,8 @@ extension VimEngine {
             result.window.changeInProgress = command.change
             return
         case .yank: yank(span, register: command.register, &result, buffer)
-        case .shiftLeft, .shiftRight: shift(span, left: op == .shiftLeft, &result, buffer)
+        case .shiftLeft, .shiftRight:
+            shift(span, left: op == .shiftLeft, amount: 1, &result, buffer)
         case .lowercase: changeCase(span, .lower, &result, buffer)
         case .uppercase: changeCase(span, .upper, &result, buffer)
         case .toggleCase: changeCase(span, .toggle, &result, buffer)
@@ -213,12 +214,14 @@ extension VimEngine {
 
     // MARK: Delete, change and yank
 
-    private static func delete(_ span: OperatorSpan, register: Character?, _ registerOne: Bool,
-                               _ result: inout VimResult, _ buffer: VimBuffer) {
+    /// Deletes `span`. Outside Visual mode, Vi's rule may turn a characterwise delete into
+    /// a linewise one.
+    static func delete(_ span: OperatorSpan, register: Character?, _ registerOne: Bool,
+                       visual: Bool = false, _ result: inout VimResult, _ buffer: VimBuffer) {
         var region = span.region
         if case .characters(let range) = region {
             guard range.length > 0 else { return }
-            if spansLinesLeavingBlanks(range, buffer) {
+            if !visual && spansLinesLeavingBlanks(range, buffer) {
                 region = .lines(region.lines(in: buffer))
             }
         }
@@ -227,11 +230,21 @@ extension VimEngine {
         case .characters(let range):
             result.edits.append(TextEdit(range: range, replacement: ""))
             result.window.cursor = cursor(afterDeleting: range, buffer)
+            let start = buffer.mark(at: range.location)
+            setChangeMarks(start, start, &result.window)
         case .lines(let lines):
             let (edit, cursor) = deleteLines(lines, buffer)
             result.edits.append(edit)
             result.window.cursor = cursor
+            let start = Mark(line: lines.lowerBound, column: 0)
+            setChangeMarks(start, start, &result.window)
         }
+    }
+
+    /// Sets the `[` and `]` marks, which Vim puts around the text a command changed or yanked.
+    static func setChangeMarks(_ start: Mark, _ end: Mark, _ window: inout VimWindowState) {
+        window.marks["["] = start
+        window.marks["]"] = end
     }
 
     /// Vi's rule, kept by Vim's default `cpoptions`: a characterwise delete over several
@@ -266,8 +279,8 @@ extension VimEngine {
         if let clipboard { result.effects.append(.setClipboard(clipboard)) }
     }
 
-    private static func change(_ span: OperatorSpan, register: Character?, _ registerOne: Bool,
-                               _ result: inout VimResult, _ buffer: VimBuffer) {
+    static func change(_ span: OperatorSpan, register: Character?, _ registerOne: Bool,
+                       _ result: inout VimResult, _ buffer: VimBuffer) {
         switch span.region {
         case .characters(let range):
             if range.length > 0 {
@@ -289,12 +302,22 @@ extension VimEngine {
         result.window.insertSession = InsertSession()
     }
 
-    private static func yank(_ span: OperatorSpan, register: Character?,
-                             _ result: inout VimResult, _ buffer: VimBuffer) {
+    static func yank(_ span: OperatorSpan, register: Character?,
+                     _ result: inout VimResult, _ buffer: VimBuffer) {
         let clipboard = result.session.registers.yank(
             registerValue(span.region, buffer), into: target(register, result.session.options))
         if let clipboard { result.effects.append(.setClipboard(clipboard)) }
         result.window.cursor = Motions.normalPosition(span.start, in: buffer)
+        switch span.region {
+        case .characters(let range):
+            var last = NSMaxRange(range)
+            if range.length > 0 { _ = buffer.decl(&last) }
+            setChangeMarks(buffer.mark(at: range.location), buffer.mark(at: last),
+                           &result.window)
+        case .lines(let lines):
+            setChangeMarks(Mark(line: lines.lowerBound, column: 0),
+                           Mark(line: lines.upperBound, column: Int.max), &result.window)
+        }
     }
 
     /// The register a yank or delete writes: the one named, or under `clipboard=unnamed`
@@ -394,10 +417,11 @@ extension VimEngine {
         return lineStart + column
     }
 
-    private static func shift(_ span: OperatorSpan, left: Bool, _ result: inout VimResult,
-                              _ buffer: VimBuffer) {
+    /// Shifts the lines of `span` by `amount` shift widths.
+    static func shift(_ span: OperatorSpan, left: Bool, amount: Int, _ result: inout VimResult,
+                      _ buffer: VimBuffer) {
         let options = result.session.options
-        let width = options.shiftwidth > 0 ? options.shiftwidth : options.tabstop
+        let width = amount * (options.shiftwidth > 0 ? options.shiftwidth : options.tabstop)
         let lines = span.region.lines(in: buffer)
         let contents = lines.map { line -> String in
             let content = buffer.substring(buffer.contentRange(at: line))
@@ -422,8 +446,8 @@ extension VimEngine {
 
     // MARK: Case
 
-    private static func changeCase(_ span: OperatorSpan, _ change: CaseChange,
-                                   _ result: inout VimResult, _ buffer: VimBuffer) {
+    static func changeCase(_ span: OperatorSpan, _ change: CaseChange,
+                           _ result: inout VimResult, _ buffer: VimBuffer) {
         switch span.region {
         case .characters(let range):
             let old = buffer.substring(range)
@@ -446,8 +470,8 @@ extension VimEngine {
 
     /// Every non-blank line takes the indent of the nearest non-blank line above the region;
     /// blank lines lose their blanks. Vim would use C indenting here.
-    private static func reindent(_ span: OperatorSpan, _ result: inout VimResult,
-                                 _ buffer: VimBuffer) {
+    static func reindent(_ span: OperatorSpan, _ result: inout VimResult,
+                         _ buffer: VimBuffer) {
         let options = result.session.options
         let lines = span.region.lines(in: buffer)
         var above = lines.lowerBound - 1
@@ -465,8 +489,8 @@ extension VimEngine {
     /// Joins each paragraph of the region and breaks it again at blanks, so that no line is
     /// wider than `textwidth` (79 when it is 0) unless a single word is. Unlike Vim, comment
     /// leaders such as `#` and list markers are not recognized.
-    private static func format(_ span: OperatorSpan, _ result: inout VimResult,
-                               _ buffer: VimBuffer) {
+    static func format(_ span: OperatorSpan, _ result: inout VimResult,
+                       _ buffer: VimBuffer) {
         let options = result.session.options
         let lines = span.region.lines(in: buffer)
         let width = options.textwidth > 0 ? options.textwidth : 79

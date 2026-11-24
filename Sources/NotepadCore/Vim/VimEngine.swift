@@ -53,6 +53,10 @@ enum NormalCommand: Equatable {
     /// An operator with its target, as `x` is `dl`.
     case operate(Operator, OperatorTarget)
     case edit(Edit)
+    /// `v`, `V` and Control-V.
+    case startVisual(VimMode)
+    /// `gv`.
+    case reselectVisual
 
     enum Scroll: Equatable {
         /// Control-E and Control-Y.
@@ -81,6 +85,11 @@ enum NormalCommand: Equatable {
         case (.character("b"), true), (.pageUp, false):
             return .complete(.scroll(.page(down: false)))
         case (.character("o"), true): return .complete(.jumpOlder)
+        case (.character("v"), true): return .complete(.startVisual(.visualBlock))
+        case (.character("v"), false): return .complete(.startVisual(.visual))
+        case (.character("V"), false): return .complete(.startVisual(.visualLine))
+        case (.character("g"), false) where keys.count > 1 && keys[1] == VimKey(.character("v")):
+            return .complete(.reselectVisual)
         case (.character("i"), true), (.tab, false): return .complete(.jumpNewer)
         case (.character("z"), false):
             guard keys.count > 1 else { return .incomplete }
@@ -128,14 +137,16 @@ public enum VimEngine {
         var result = VimResult(window: window, session: session, edits: [], selections: [],
                                effects: [])
         switch window.mode {
-        case .normal, .operatorPending:
+        case .normal, .operatorPending, .visual, .visualLine, .visualBlock:
             normal(key, &result, buffer, screen, clipboard)
         case .insert, .replace:
             insertMode(key, &result, buffer)
-        case .visual, .visualLine, .visualBlock, .commandLine:
+        case .commandLine:
             return result
         }
-        result.selections = [NSRange(location: result.window.cursor, length: 0)]
+        result.selections = result.window.mode.isVisual && result.edits.isEmpty
+            ? visualSelections(result.window, buffer, tabstop: result.session.options.tabstop)
+            : [NSRange(location: result.window.cursor, length: 0)]
         return result
     }
 
@@ -145,20 +156,24 @@ public enum VimEngine {
 
     private static let registerKey = VimKey(.character("\""))
 
-    /// Normal and operator-pending mode: a count, a register, then a command, or after an
-    /// operator, another count and its motion or text object.
+    /// Normal, operator-pending and Visual mode: a count, a register, then a command, or
+    /// after an operator, another count and its motion or text object.
     private static func normal(_ key: VimKey, _ result: inout VimResult, _ buffer: VimBuffer,
                                _ screen: ScreenGeometry, _ clipboard: () -> String?) {
-        result.window.cursor = Motions.normalPosition(result.window.cursor, in: buffer)
+        let visual = result.window.mode.isVisual
+        if !visual {
+            result.window.cursor = Motions.normalPosition(result.window.cursor, in: buffer)
+        }
         if key == VimKey(.escape) {
             clearPending(&result.window)
+            if visual { endVisual(&result, buffer) }
             return
         }
         if result.window.pendingKeys.isEmpty, let digit = countDigit(key, result.window) {
             result.window.count = min((result.window.count ?? 0) * 10 + digit, maximumCount)
             return
         }
-        let inNormal = result.window.mode == .normal
+        let inNormal = result.window.mode != .operatorPending
         if inNormal && result.window.pendingKeys == [registerKey] {
             result.window.pendingKeys = []
             guard let name = key.argumentCharacter, isRegisterName(name) else {
@@ -171,6 +186,16 @@ public enum VimEngine {
         }
         result.window.pendingKeys.append(key)
         if inNormal && result.window.pendingKeys == [registerKey] { return }
+        if visual {
+            switch VisualCommand.parse(result.window.pendingKeys) {
+            case .incomplete: return
+            case .unknown: fail(&result)
+            case .complete(let command):
+                let input = takeInput(&result.window, keys: result.window.pendingKeys)
+                self.visual(command, input, &result, buffer, screen, clipboard)
+            }
+            return
+        }
         if inNormal {
             switch NormalCommand.parse(result.window.pendingKeys) {
             case .incomplete: return
@@ -217,6 +242,12 @@ public enum VimEngine {
                                  _ buffer: VimBuffer, _ screen: ScreenGeometry,
                                  _ clipboard: () -> String?) {
         let input = takeInput(&result.window, keys: result.window.pendingKeys)
+        complete(command, input, &result, buffer, screen, clipboard)
+    }
+
+    static func complete(_ command: NormalCommand, _ input: CommandInput,
+                         _ result: inout VimResult, _ buffer: VimBuffer,
+                         _ screen: ScreenGeometry, _ clipboard: () -> String?) {
         switch command {
         case .motion(let motion): move(motion, count: input.count, &result, buffer, screen)
         case .scroll(let scroll): self.scroll(scroll, count: input.count, &result, buffer, screen)
@@ -230,6 +261,8 @@ public enum VimEngine {
             result.window.mode = .operatorPending
         case .operate(let op, let target): operate(op, on: target, input, &result, buffer, screen)
         case .edit(let edit): self.edit(edit, input, &result, buffer, clipboard)
+        case .startVisual(let mode): startVisual(mode, count: input.count, &result, buffer)
+        case .reselectVisual: reselectVisual(&result, buffer)
         }
     }
 
@@ -267,7 +300,8 @@ public enum VimEngine {
 
     private static func move(_ motion: Motion, count: Int?, _ result: inout VimResult,
                              _ buffer: VimBuffer, _ screen: ScreenGeometry) {
-        let context = motionContext(result, buffer, screen)
+        var context = motionContext(result, buffer, screen)
+        context.visual = result.window.mode.isVisual
         if case .find(let find) = motion { result.session.lastFind = find }
         switch Motions.target(of: motion, count: count, from: result.window.cursor,
                               in: context) {
@@ -276,7 +310,8 @@ public enum VimEngine {
             result.effects.append(.failure)
         case .success(let target):
             if motion.isJump { recordJump(&result.window, buffer) }
-            result.window.cursor = Motions.normalPosition(target.offset, in: buffer)
+            result.window.cursor = context.visual ? target.offset
+                : Motions.normalPosition(target.offset, in: buffer)
             result.window.desiredColumn = target.desiredColumn
             if target.shortfall != nil { result.effects.append(.failure) }
         }

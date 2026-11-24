@@ -203,6 +203,9 @@ struct MotionContext {
     /// The pending operator is `d` or `c`, for which Backspace at a line start stops on the
     /// line break before it.
     var operatorDeletes = false
+    /// In Visual mode the cursor may also rest after the last character of a line, where
+    /// `l`, `j`, `k` and `$` can take it, as Vim's `coladvance` allows there.
+    var visual = false
 }
 
 enum Motions {
@@ -237,7 +240,7 @@ enum Motions {
         case .firstNonBlank:
             let offset = normalPosition(b.firstNonBlank(line: b.lineIndex(of: cursor)), in: b)
             return .success(MotionTarget(offset, .exclusive))
-        case .lineEnd: return lineEnd(cursor, count1, b)
+        case .lineEnd: return lineEnd(cursor, count1, visual: context.visual, b)
         case .lastNonBlank: return lastNonBlank(cursor, count1, b)
         case .column:
             let column = count1 - 1
@@ -328,7 +331,9 @@ enum Motions {
         var kind = MotionKind.exclusive
         for _ in 0..<count {
             let line = b.lineIndex(of: offset)
-            if offset < normalPosition(b.contentEnd(line), in: b) {
+            let last = context.visual ? b.contentEnd(line) : normalPosition(b.contentEnd(line),
+                                                                            in: b)
+            if offset < last {
                 offset = b.nextGrapheme(after: offset) ?? offset
             } else if wrapping, line + 1 < b.lineCount {
                 if context.operatorPending && kind == .exclusive && !b.isEmptyLine(line) {
@@ -368,14 +373,17 @@ enum Motions {
         let want = context.desiredColumn ?? b.displayColumn(of: cursor, tabstop: tabstop)
         return lineMove(cursor, delta, b).map { line in
             let offset = b.offset(line: line, displayColumn: want, tabstop: tabstop)
-            return MotionTarget(normalPosition(offset, in: b), .linewise, desiredColumn: want)
+            return MotionTarget(context.visual ? offset : normalPosition(offset, in: b),
+                                .linewise, desiredColumn: want)
         }
     }
 
-    private static func lineEnd(_ cursor: Int, _ count: Int, _ b: VimBuffer) -> Outcome {
+    private static func lineEnd(_ cursor: Int, _ count: Int, visual: Bool,
+                                _ b: VimBuffer) -> Outcome {
         lineMove(cursor, count - 1, b).map { line in
-            MotionTarget(normalPosition(b.contentEnd(line), in: b), .inclusive,
-                         desiredColumn: Int.max)
+            let end = b.contentEnd(line)
+            return MotionTarget(visual ? end : normalPosition(end, in: b), .inclusive,
+                                desiredColumn: Int.max)
         }
     }
 
@@ -760,7 +768,9 @@ enum Motions {
             let ordered = [visual.anchor, visual.cursor].sorted {
                 ($0.line, $0.column) < ($1.line, $1.column)
             }
-            return name == "<" ? ordered[0] : ordered[1]
+            var mark = name == "<" ? ordered[0] : ordered[1]
+            if visual.mode == .visualLine { mark.column = name == "<" ? 0 : Int.max }
+            return mark
         default: return context.marks[name]
         }
     }
