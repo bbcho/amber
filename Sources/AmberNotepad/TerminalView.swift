@@ -36,6 +36,10 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     let status = NSTextField(labelWithString: "Drafts save automatically")
     let commandLine = NSTextField()
     var commandSubmitted: ((String) -> Void)?
+    /// Candidate full command lines for Tab completion of the typed command.
+    var completeCommand: ((String) -> [String])?
+    private var completions: [String] = []
+    private var completionIndex = 0
     let preview = MarkdownPreviewView()
     private(set) var isShowingMarkdown = false
     private var sourceSelection = NSRange(location: 0, length: 0)
@@ -111,6 +115,10 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         _ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector
     ) -> Bool {
         guard control === commandLine, !commandLine.isHidden else { return false }
+        if commandSelector == #selector(NSResponder.insertTab(_:)) {
+            completeCommandLine(textView)
+            return true
+        }
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
             endCommand()
             return true
@@ -121,6 +129,24 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty, trimmed != ":" { commandSubmitted?(command) }
         return true
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        completions = []
+    }
+
+    /// The first Tab inserts the first match; later Tabs cycle, as Vim's command line does.
+    private func completeCommandLine(_ editor: NSTextView) {
+        if let index = completions.firstIndex(of: editor.string) {
+            completionIndex = (index + 1) % completions.count
+        } else {
+            completions = completeCommand?(editor.string) ?? []
+            completionIndex = 0
+        }
+        guard !completions.isEmpty else { return }
+        editor.string = completions[completionIndex]
+        commandLine.stringValue = editor.string
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
     }
 
     private func endCommand() {
@@ -167,13 +193,15 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     }
 
     /// Replaces the editor's text as one undoable change, keeping the cursor's line and
-    /// column and the scroll position. Used when the file changes outside Amber.
+    /// column and the scroll position. Used when the file changes outside Amber. A cursor on
+    /// the last line follows it to the new last line, like `tail -f`.
     func replaceSourceText(_ text: String) {
         let old = textView.string as NSString
         let new = text as NSString
         let cursor = isShowingMarkdown
             ? sourceSelection.location : textView.selectedRange().location
         let position = Self.linePosition(of: min(cursor, old.length), in: old)
+        let follows = position.line == Self.linePosition(of: old.length, in: old).line
         let origin = scroll.contentView.bounds.origin
         let whole = NSRange(location: 0, length: old.length)
         guard textView.shouldChangeText(in: whole, replacementString: text) else { return }
@@ -181,27 +209,34 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         textView.textStorage?.replaceCharacters(in: whole, with: replacement)
         textView.didChangeText()
         if textView.mode == .visual { textView.setMode(.normal) }
+        let line = follows ? Self.linePosition(of: new.length, in: new).line : position.line
         let moved = NSRange(
-            location: Self.offset(line: position.line, column: position.column, in: new), length: 0
+            location: Self.offset(line: line, column: position.column, in: new), length: 0
         )
         if isShowingMarkdown { sourceSelection = moved } else { textView.setSelectedRange(moved) }
         if let container = textView.textContainer {
             textView.layoutManager?.ensureLayout(for: container)
         }
+        textView.sizeToFit()
         let clip = scroll.contentView
         let bottom = max(textView.frame.height - clip.bounds.height, 0)
-        clip.scroll(to: NSPoint(x: origin.x, y: min(origin.y, bottom)))
+        clip.scroll(to: NSPoint(x: origin.x, y: follows ? bottom : min(origin.y, bottom)))
         scroll.reflectScrolledClipView(clip)
     }
 
-    /// Replaces the rendered text, keeping the rendered view's scroll position.
+    /// Replaces the rendered text, keeping the rendered view's scroll position, or keeping
+    /// it at the bottom if it was there.
     func updateMarkdown(_ text: NSAttributedString) {
         let clip = previewScroll.contentView
         let origin = clip.bounds.origin
+        let wasAtBottom = origin.y >= preview.frame.height - clip.bounds.height - 1
         preview.textStorage?.setAttributedString(text)
-        layoutSubtreeIfNeeded()
+        if let container = preview.textContainer {
+            preview.layoutManager?.ensureLayout(for: container)
+        }
+        preview.sizeToFit()
         let bottom = max(preview.frame.height - clip.bounds.height, 0)
-        clip.scroll(to: NSPoint(x: origin.x, y: min(origin.y, bottom)))
+        clip.scroll(to: NSPoint(x: origin.x, y: wasAtBottom ? bottom : min(origin.y, bottom)))
         previewScroll.reflectScrolledClipView(clip)
     }
 

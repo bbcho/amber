@@ -59,6 +59,17 @@ final class DiskChangeTests: XCTestCase {
         XCTAssertEqual(session.file.text, "first")
     }
 
+    func test_waiting_for_quiet_reloads_only_once_a_change_holds_still() throws {
+        let session = try session()
+        try Data("half".utf8).write(to: note, options: .atomic)
+        XCTAssertEqual(try session.checkDisk(waitForQuiet: true), .unchanged)
+        try Data("half written".utf8).write(to: note, options: .atomic)
+        XCTAssertEqual(try session.checkDisk(waitForQuiet: true), .unchanged)
+        XCTAssertEqual(session.file.text, "first")
+        XCTAssertEqual(try session.checkDisk(waitForQuiet: true), .reloaded)
+        XCTAssertEqual(session.file.text, "half written")
+    }
+
     func test_an_untitled_document_has_no_file_to_check() throws {
         let session = DocumentSession(recoveryURL: directory.appendingPathComponent("draft.json"))
         session.updateText("draft")

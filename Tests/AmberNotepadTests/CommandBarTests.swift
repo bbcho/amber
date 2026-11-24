@@ -133,6 +133,29 @@ final class CommandBarTests: XCTestCase {
         }
     }
 
+    func test_tab_cycles_through_completions_until_the_text_changes() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            terminal.completeCommand = { input in
+                input == ":e a" ? [":e alpha.md", ":e alps.md"] : []
+            }
+            terminal.beginCommand()
+            guard let field = terminal.commandLine.currentEditor() as? NSTextView else {
+                XCTFail("Command entry must have a native field editor")
+                return
+            }
+            field.string = ":e a"
+            field.doCommand(by: #selector(NSResponder.insertTab(_:)))
+            XCTAssertEqual(terminal.commandLine.stringValue, ":e alpha.md")
+            field.doCommand(by: #selector(NSResponder.insertTab(_:)))
+            XCTAssertEqual(terminal.commandLine.stringValue, ":e alps.md")
+            field.doCommand(by: #selector(NSResponder.insertTab(_:)))
+            XCTAssertEqual(terminal.commandLine.stringValue, ":e alpha.md")
+            XCTAssertTrue(window.firstResponder === field)
+        }
+    }
+
     @MainActor private func editorWindow() -> (TerminalView, NSWindow) {
         _ = NSApplication.shared
         let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: 700, height: 500))

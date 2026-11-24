@@ -137,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             self?.execute(command, in: editor)
         }
         editor.onFileUsed = { [weak self] editor, url in self?.recordRecent(url, from: editor) }
+        editor.recentFiles = { [weak self] in self?.recentFiles.urls ?? [] }
         editor.onClose = { [weak self] editor in
             self?.editors.removeAll { $0 === editor }
         }

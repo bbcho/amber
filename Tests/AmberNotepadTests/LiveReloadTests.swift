@@ -161,6 +161,47 @@ final class LiveReloadTests: XCTestCase {
         }
     }
 
+    func test_a_cursor_on_the_last_line_follows_appended_text() async throws {
+        try await MainActor.run {
+            let lines = (1...300).map { "line \($0)" }
+            let (app, directory, file) = try workspace(lines.joined(separator: "\n"))
+            defer { cleanup(app, directory) }
+            let editor = try app.createWindow(fileURL: file)
+            let view = editor.terminal.textView
+            view.setSelectedRange(NSRange(location: (view.string as NSString).length, length: 0))
+
+            let grown = lines + (301...350).map { "line \($0)" }
+            try grown.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+            editor.checkDisk()
+
+            let lastLine = (view.string as NSString).range(of: "line 350")
+            XCTAssertEqual(view.selectedRange().location, NSMaxRange(lastLine))
+            XCTAssertEqual(view.visibleRect.maxY, view.bounds.maxY)
+        }
+    }
+
+    func test_a_rendered_view_at_the_bottom_stays_at_the_bottom() async throws {
+        try await MainActor.run {
+            let paragraphs = (1...80).map { "Paragraph \($0)" }
+            let (app, directory, file) = try workspace(paragraphs.joined(separator: "\n\n"))
+            defer { cleanup(app, directory) }
+            let editor = try app.createWindow(fileURL: file)
+            editor.toggleMarkdown()
+            let preview = editor.terminal.preview
+            preview.keyDown(with: key("G"))
+            XCTAssertEqual(preview.visibleRect.maxY, preview.bounds.maxY)
+
+            let grown = paragraphs + (81...120).map { "Paragraph \($0)" }
+            try grown.joined(separator: "\n\n").write(to: file, atomically: true, encoding: .utf8)
+            editor.checkDisk()
+
+            XCTAssertTrue(preview.string.hasSuffix("Paragraph 120"))
+            preview.layoutManager?.ensureLayout(for: preview.textContainer!)
+            preview.sizeToFit()
+            XCTAssertEqual(preview.visibleRect.maxY, preview.bounds.maxY)
+        }
+    }
+
     @MainActor private func wait(seconds: TimeInterval) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }

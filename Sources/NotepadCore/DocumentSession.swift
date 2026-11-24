@@ -31,6 +31,8 @@ public final class DocumentSession {
     /// The last change already examined, so a conflict or unreadable file is not re-read
     /// on every check.
     private var lastCheck: (stamp: DiskStamp, wasDirty: Bool)?
+    /// The changed stamp seen by the previous quiet check.
+    private var pendingStamp: DiskStamp?
 
     public var file: TextFile { snapshot.file }
     public var url: URL? { snapshot.url }
@@ -68,10 +70,19 @@ public final class DocumentSession {
 
     /// Reloads the file when it changed outside Amber and there are no unsaved edits.
     /// Bytes equal to Amber's last save are not a change, so autosave never triggers this.
-    public func checkDisk() throws -> DiskChange {
+    /// With `waitForQuiet`, a change must look the same on two checks in a row, so a file
+    /// still being written in pieces is never loaded half-written.
+    public func checkDisk(waitForQuiet: Bool = false) throws -> DiskChange {
         guard let url else { return .unchanged }
         guard let current = Self.stamp(url) else { return .missing }
-        guard current != diskStamp else { return .unchanged }
+        guard current != diskStamp else {
+            pendingStamp = nil
+            return .unchanged
+        }
+        if waitForQuiet, current != pendingStamp {
+            pendingStamp = current
+            return .unchanged
+        }
         if let lastCheck, lastCheck.stamp == current, lastCheck.wasDirty == isDirty {
             return .unchanged
         }

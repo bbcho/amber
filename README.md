@@ -36,7 +36,9 @@ or an empty window if none do.
 Each window checks its file twice a second, like Vim's `autoread`. When another program or
 an agent changes the file and you have no unsaved edits, Amber reloads it, keeping your
 cursor's line and column and your scroll position, and the rendered Markdown view updates
-too. The reload is one undo step. Undoing it shows your earlier text again but does not
+too. Amber waits until the file has stopped changing for half a second, so a file still
+being written is never shown half-done. If your cursor is on the last line, it follows new
+text added at the end, like `tail -f`. The reload is one undo step. Undoing it shows your earlier text again but does not
 write it over the file: autosave keeps it as a draft until you press Command-S. If you have
 unsaved edits, Amber keeps your text and
 shows that the file changed outside the app; press Command-S to choose what to keep.
@@ -116,7 +118,8 @@ Append `!` to write/edit/quit commands to explicitly overwrite or discard pendin
 `:wqa!` still saves before closing; cancelled/failed saves leave all windows open.
 `:q!` and `:e!` cannot undo writes that autosave has already made to a named file.
 
-Paths expand `~`; relative paths start beside the current file, or in your home directory
+Tab completes file paths after `:e` and `:w`; press it again to cycle through matches, or
+press it on an empty path to cycle through recent files. Paths expand `~`; relative paths start beside the current file, or in your home directory
 for unnamed documents. The rest of the command is treated as the literal filename, including
 spaces. Unsupported commands show an error without changing the document.
 

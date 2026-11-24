@@ -19,6 +19,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     var onCommand: ((EditorWindow, String) -> Void)?
     /// Called whenever the window starts editing a different file on disk.
     var onFileUsed: ((EditorWindow, URL) -> Void)?
+    var recentFiles: (() -> [URL])?
     private var reportedURL: URL?
     var canUseFile: ((EditorWindow, URL) throws -> Bool)?
 
@@ -51,6 +52,15 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         )
         terminal.textView.delegate = self
         terminal.textView.modeDidChange = { [weak self] in self?.updateStatus() }
+        terminal.completeCommand = { [weak self] input in
+            guard let self else { return [] }
+            return PathCompletion.candidates(
+                for: input,
+                relativeTo: self.documentURL?.deletingLastPathComponent()
+                    ?? FileManager.default.homeDirectoryForCurrentUser,
+                recent: self.recentFiles?() ?? []
+            )
+        }
         terminal.commandSubmitted = { [weak self] command in
             guard let self else { return }
             self.commandMessage = nil
@@ -60,15 +70,15 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         window.center()
         showDocument()
         diskTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkDisk() }
+            MainActor.assumeIsolated { self?.checkDisk(waitForQuiet: true) }
         }
     }
 
     /// Shows changes made to the file outside Amber, such as an agent's edits, like Vim's
     /// `autoread`: clean text reloads, and unsaved edits are never replaced.
-    func checkDisk() {
+    func checkDisk(waitForQuiet: Bool = false) {
         do {
-            switch try session.checkDisk() {
+            switch try session.checkDisk(waitForQuiet: waitForQuiet) {
             case .unchanged:
                 return
             case .reloaded:
