@@ -13,6 +13,9 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private var discardOnClose = false
     var onClose: ((EditorWindow) -> Void)?
     var onCommand: ((EditorWindow, String) -> Void)?
+    /// Called whenever the window starts editing a different file on disk.
+    var onFileUsed: ((EditorWindow, URL) -> Void)?
+    private var reportedURL: URL?
     var canUseFile: ((EditorWindow, URL) throws -> Bool)?
 
     var documentURL: URL? { session.url }
@@ -216,6 +219,10 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     }
 
     private func updateStatus() {
+        if let url = session.url, url != reportedURL {
+            reportedURL = url
+            onFileUsed?(self, url)
+        }
         let name = session.url?.lastPathComponent ?? "Untitled"
         terminal.filename.stringValue = name + (session.isDirty ? " *" : "")
         window.title = name + " — Amber"

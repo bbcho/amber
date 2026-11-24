@@ -291,6 +291,113 @@ final class WorkspaceTests: XCTestCase {
         }
     }
 
+    func test_opening_and_saving_files_records_recent_files() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let first = try note("first.md", in: directory)
+            let editor = try app.createWindow(fileURL: first)
+            let second = directory.appendingPathComponent("second.md").resolvingSymlinksInPath()
+            app.execute(":w " + second.path, in: editor)
+            XCTAssertEqual(app.recentFiles.urls, [second, first])
+            let saved = RecentFiles.load(from: directory.appendingPathComponent("Recent.json"))
+            XCTAssertEqual(saved.urls, [second, first])
+        }
+    }
+
+    func test_open_recent_lists_newest_first_and_opens_a_choice() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let first = try note("first.md", in: directory)
+            let second = try note("second.md", in: directory)
+            try app.createWindow(fileURL: first).close()
+            try app.createWindow(fileURL: second)
+            let menu = NSMenu()
+            app.menuNeedsUpdate(menu)
+            XCTAssertEqual(menu.items.map(\.title), ["second.md", "first.md", "", "Clear Menu"])
+            XCTAssertEqual(menu.items[0].toolTip, second.path)
+
+            let item = menu.items[1]
+            _ = (item.target as AnyObject).perform(item.action, with: item)
+
+            XCTAssertTrue(app.editors.contains { $0.documentURL == first })
+            XCTAssertEqual(app.recentFiles.urls.first, first)
+        }
+    }
+
+    func test_open_recent_hides_missing_files_and_names_folders_for_duplicates() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            for folder in ["one", "two", "gone"] {
+                let subfolder = directory.appendingPathComponent(folder)
+                try FileManager.default.createDirectory(
+                    at: subfolder, withIntermediateDirectories: true
+                )
+                try app.createWindow(fileURL: try note("note.md", in: subfolder)).close()
+            }
+            try FileManager.default.removeItem(at: directory.appendingPathComponent("gone"))
+            let menu = NSMenu()
+            app.menuNeedsUpdate(menu)
+            XCTAssertEqual(menu.items.map(\.title),
+                           ["note.md — two", "note.md — one", "", "Clear Menu"])
+        }
+    }
+
+    func test_clear_menu_empties_the_recent_files() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            try app.createWindow(fileURL: try note("first.md", in: directory))
+            let menu = NSMenu()
+            app.menuNeedsUpdate(menu)
+            let clear = try XCTUnwrap(menu.items.last)
+            _ = (clear.target as AnyObject).perform(clear.action, with: clear)
+            XCTAssertEqual(app.recentFiles.urls, [])
+            app.menuNeedsUpdate(menu)
+            XCTAssertEqual(menu.items.map(\.title), ["Clear Menu"])
+            XCTAssertFalse(app.validateMenuItem(menu.items[0]))
+        }
+    }
+
+    func test_launch_without_drafts_opens_the_most_recent_file() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let recent = try note("recent.md", in: directory)
+            let recents = directory.appendingPathComponent("Recent.json")
+            try RecentFiles().adding(recent).save(to: recents)
+            let recovery = directory.appendingPathComponent("Recovery.json")
+            let launched = AppDelegate(recoveryURL: recovery)
+            defer { for editor in launched.editors { editor.window.close() } }
+            try launched.restoreWindows()
+            XCTAssertEqual(launched.editors.map(\.documentURL), [recent])
+        }
+    }
+
+    func test_launch_with_a_missing_recent_file_opens_an_empty_window() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let missing = directory.appendingPathComponent("missing.md")
+            let recents = directory.appendingPathComponent("Recent.json")
+            try RecentFiles().adding(missing).save(to: recents)
+            let recovery = directory.appendingPathComponent("Recovery.json")
+            let launched = AppDelegate(recoveryURL: recovery)
+            defer { for editor in launched.editors { editor.window.close() } }
+            try launched.restoreWindows()
+            XCTAssertEqual(launched.editors.count, 1)
+            XCTAssertNil(launched.editors.first?.documentURL)
+        }
+    }
+
+    @MainActor private func note(_ name: String, in directory: URL) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        try "\(name) text".write(to: url, atomically: true, encoding: .utf8)
+        return url.resolvingSymlinksInPath()
+    }
+
     @MainActor private func workspace() throws -> (AppDelegate, URL) {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory
