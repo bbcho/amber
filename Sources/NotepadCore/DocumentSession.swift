@@ -1,6 +1,21 @@
 import Foundation
 
+/// What `DocumentSession.checkDisk()` found on disk.
+public enum DiskChange: Equatable {
+    case unchanged
+    /// Clean text was replaced with the file's new contents.
+    case reloaded
+    /// The file changed, but unsaved edits were kept.
+    case conflict
+    case missing
+}
+
 public final class DocumentSession {
+    private struct DiskStamp: Equatable {
+        let modified: Date?
+        let size: Int?
+    }
+
     private struct Snapshot: Codable {
         var file = TextFile()
         var url: URL?
@@ -9,6 +24,7 @@ public final class DocumentSession {
 
     private var snapshot = Snapshot()
     private let recoveryURL: URL
+    private var diskStamp: DiskStamp?
 
     public var file: TextFile { snapshot.file }
     public var url: URL? { snapshot.url }
@@ -30,6 +46,7 @@ public final class DocumentSession {
            let latest = try? TextFile.decode(bytes) {
             snapshot = Snapshot(file: latest, url: url, savedBytes: bytes)
         }
+        diskStamp = url.flatMap(Self.stamp)
     }
 
     public func open(_ url: URL) throws {
@@ -38,6 +55,26 @@ public final class DocumentSession {
         let next = Snapshot(file: try TextFile.decode(bytes), url: resolved, savedBytes: bytes)
         try writeRecovery(next)
         snapshot = next
+        diskStamp = Self.stamp(resolved)
+    }
+
+    /// Reloads the file when it changed outside Amber and there are no unsaved edits.
+    /// Bytes equal to Amber's last save are not a change, so autosave never triggers this.
+    public func checkDisk() throws -> DiskChange {
+        guard let url else { return .unchanged }
+        guard let current = Self.stamp(url) else { return .missing }
+        guard current != diskStamp else { return .unchanged }
+        let bytes = try Data(contentsOf: url)
+        if bytes == snapshot.savedBytes {
+            diskStamp = current
+            return .unchanged
+        }
+        if isDirty { return .conflict }
+        let next = Snapshot(file: try TextFile.decode(bytes), url: url, savedBytes: bytes)
+        try writeRecovery(next)
+        snapshot = next
+        diskStamp = current
+        return .reloaded
     }
 
     public func updateText(_ text: String) {
@@ -61,6 +98,7 @@ public final class DocumentSession {
         try bytes.write(to: resolved, options: .atomic)
         snapshot.url = resolved
         snapshot.savedBytes = bytes
+        diskStamp = Self.stamp(resolved)
         try writeRecovery(snapshot)
     }
 
@@ -80,6 +118,16 @@ public final class DocumentSession {
         let detached = Snapshot(file: file, url: nil, savedBytes: nil)
         try writeRecovery(detached)
         snapshot = detached
+    }
+
+    private static func stamp(_ url: URL) -> DiskStamp? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
+            return nil
+        }
+        return DiskStamp(
+            modified: attributes[.modificationDate] as? Date,
+            size: (attributes[.size] as? NSNumber)?.intValue
+        )
     }
 
     private func writeRecovery(_ value: Snapshot) throws {
