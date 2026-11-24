@@ -10,6 +10,9 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private var autosaveTimer: Timer?
     private var saveMessage = "Draft recovery is on"
     private var diskTimer: Timer?
+    /// Set when undo brings back text from before an outside change: autosave then keeps it
+    /// in recovery only, so the outside change on disk is replaced only by an explicit save.
+    private var autosaveHeld = false
     private var commandMessage: String?
     private var discardOnClose = false
     var onClose: ((EditorWindow) -> Void)?
@@ -69,7 +72,12 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
             case .unchanged:
                 return
             case .reloaded:
+                let undo = terminal.textView.undoManager
+                terminal.textView.breakUndoCoalescing()
+                undo?.beginUndoGrouping()
                 terminal.replaceSourceText(session.file.text)
+                undo?.registerUndo(withTarget: self) { $0.reloadWasUndone() }
+                undo?.endUndoGrouping()
                 autosaveTimer?.invalidate()
                 if terminal.isShowingMarkdown {
                     terminal.updateMarkdown(MarkdownRenderer.render(session.file.text))
@@ -86,6 +94,27 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         }
     }
 
+    private func reloadWasUndone() {
+        autosaveHeld = true
+        terminal.textView.undoManager?.registerUndo(withTarget: self) { $0.reloadWasRedone() }
+    }
+
+    private func reloadWasRedone() {
+        terminal.textView.undoManager?.registerUndo(withTarget: self) { $0.reloadWasUndone() }
+    }
+
+    /// Every explicit save goes through here: it is the user's choice, so it ends the hold.
+    private func saveFile(to url: URL, overwrite: Bool = false) throws {
+        try session.save(to: url, overwrite: overwrite)
+        autosaveHeld = false
+    }
+
+    /// Autosave that respects `autosaveHeld`.
+    private func persistDraft() throws {
+        if autosaveHeld, session.isDirty { try session.saveRecovery() }
+        else { try session.autosave() }
+    }
+
     func show() {
         window.makeKeyAndOrderFront(nil)
         terminal.needsLayout = true
@@ -100,6 +129,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
 
     func detachFromFile() throws {
         try session.detachFromFile()
+        reportedURL = nil
         showDocument()
         showCommandMessage("Recovered copy: original file is already open in another window")
     }
@@ -148,7 +178,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
             if !force || session.url == nil { return save() }
             guard let url = session.url, mayUseFile(url) else { return false }
             do {
-                try session.save(to: url, overwrite: true)
+                try saveFile(to: url, overwrite: true)
                 saveMessage = "Saved"
                 updateStatus()
                 return true
@@ -161,7 +191,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
             return false
         }
         do {
-            try session.save(to: url, overwrite: force)
+            try saveFile(to: url, overwrite: force)
             saveMessage = "Saved — autosave is on"
             updateStatus()
             return true
@@ -203,7 +233,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
 
     func prepareForApplicationQuit() -> Bool {
         autosaveTimer?.invalidate()
-        do { try session.autosave(); return true }
+        do { try persistDraft(); return true }
         catch { present(error); return false }
     }
 
@@ -226,6 +256,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         commandMessage = nil
         session.updateText(terminal.textView.string)
+        if !session.isDirty { autosaveHeld = false }
         saveMessage = "Saving…"
         updateStatus()
         autosaveTimer?.invalidate()
@@ -240,8 +271,13 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
 
     private func autosave() {
         do {
-            try session.autosave()
-            saveMessage = session.url == nil ? "Draft saved locally" : "Saved automatically"
+            try persistDraft()
+            if autosaveHeld, session.isDirty {
+                saveMessage = "Undo brought back text from before the outside change. "
+                    + "Press ⌘S to save it over the file."
+            } else {
+                saveMessage = session.url == nil ? "Draft saved locally" : "Saved automatically"
+            }
         } catch DocumentFailure.changedOnDisk {
             saveMessage = "File changed outside this app. Draft kept. Press ⌘S to resolve."
         } catch {
@@ -279,6 +315,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
 
     private func showDocument() {
         autosaveTimer?.invalidate()
+        autosaveHeld = false
         commandMessage = nil
         terminal.showSource()
         terminal.textView.string = session.file.text
@@ -312,7 +349,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         guard let url = session.url else { return chooseSaveLocation() }
         guard mayUseFile(url) else { return false }
         do {
-            try session.save(to: url)
+            try saveFile(to: url)
             saveMessage = "Saved"
             updateStatus()
             return true
@@ -334,7 +371,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         guard mayUseFile(url) else { return false }
         do {
-            try session.save(to: url, overwrite: true)
+            try saveFile(to: url, overwrite: true)
             saveMessage = "Saved — autosave is on"
             updateStatus()
             return true
@@ -357,7 +394,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         case .alertFirstButtonReturn: return chooseSaveLocation()
         case .alertThirdButtonReturn:
             do {
-                try session.save(to: url, overwrite: true)
+                try saveFile(to: url, overwrite: true)
                 saveMessage = "Saved"
                 updateStatus()
                 return true

@@ -30,13 +30,15 @@ undo history, Vim mode, and autosave. Opening an already-open file focuses its e
 ## Reopening and outside changes
 
 Amber reopens every window that was open when you quit. If there is nothing to restore,
-for example after closing the last window, it opens your most recent file instead, or an
-empty window if that file no longer exists.
+for example after closing the last window, it opens the most recent file that still exists,
+or an empty window if none do.
 
 Each window checks its file twice a second, like Vim's `autoread`. When another program or
 an agent changes the file and you have no unsaved edits, Amber reloads it, keeping your
 cursor's line and column and your scroll position, and the rendered Markdown view updates
-too. The reload is one undo step. If you have unsaved edits, Amber keeps your text and
+too. The reload is one undo step. Undoing it shows your earlier text again but does not
+write it over the file: autosave keeps it as a draft until you press Command-S. If you have
+unsaved edits, Amber keeps your text and
 shows that the file changed outside the app; press Command-S to choose what to keep.
 
 ## Autosave and recovery

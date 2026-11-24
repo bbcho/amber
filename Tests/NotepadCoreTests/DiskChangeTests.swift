@@ -69,8 +69,27 @@ final class DiskChangeTests: XCTestCase {
         let session = try session()
         try Data("changed".utf8).write(to: note, options: .atomic)
         _ = try session.checkDisk()
-        let restored = DocumentSession(recoveryURL: directory.appendingPathComponent("draft.json"))
-        try restored.restore()
-        XCTAssertEqual(restored.file.text, "changed")
+        let recovery = try Data(contentsOf: directory.appendingPathComponent("draft.json"))
+        let snapshot = try JSONSerialization.jsonObject(with: recovery) as? [String: Any]
+        let file = snapshot?["file"] as? [String: Any]
+        XCTAssertEqual(file?["text"] as? String, "changed")
+    }
+
+    func test_an_unreadable_change_is_reported_once_not_on_every_check() throws {
+        let session = try session()
+        try Data([0xFF, 0xFE, 0x00, 0xD8]).write(to: note, options: .atomic)
+        XCTAssertThrowsError(try session.checkDisk())
+        XCTAssertEqual(try session.checkDisk(), .unchanged)
+        XCTAssertEqual(session.file.text, "first")
+    }
+
+    func test_a_replacement_with_the_same_size_and_date_is_still_detected() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: note.path)
+        let session = try session()
+        try Data("FIRST".utf8).write(to: note, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: note.path)
+        XCTAssertEqual(try session.checkDisk(), .reloaded)
+        XCTAssertEqual(session.file.text, "FIRST")
     }
 }

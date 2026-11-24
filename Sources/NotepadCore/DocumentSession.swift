@@ -11,9 +11,12 @@ public enum DiskChange: Equatable {
 }
 
 public final class DocumentSession {
+    /// Identity, date and size together catch atomic replaces even when the date and size
+    /// happen to match.
     private struct DiskStamp: Equatable {
         let modified: Date?
         let size: Int?
+        let fileNumber: Int?
     }
 
     private struct Snapshot: Codable {
@@ -25,6 +28,9 @@ public final class DocumentSession {
     private var snapshot = Snapshot()
     private let recoveryURL: URL
     private var diskStamp: DiskStamp?
+    /// The last change already examined, so a conflict or unreadable file is not re-read
+    /// on every check.
+    private var lastCheck: (stamp: DiskStamp, wasDirty: Bool)?
 
     public var file: TextFile { snapshot.file }
     public var url: URL? { snapshot.url }
@@ -41,21 +47,23 @@ public final class DocumentSession {
         guard FileManager.default.fileExists(atPath: recoveryURL.path) else { return }
         let recovered = try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: recoveryURL))
         snapshot = recovered
+        let stamp = recovered.url.flatMap(Self.stamp)
         // When recovery was clean, prefer newer on-disk contents on the next launch.
         if !isDirty, let url, let bytes = try? Data(contentsOf: url),
            let latest = try? TextFile.decode(bytes) {
             snapshot = Snapshot(file: latest, url: url, savedBytes: bytes)
         }
-        diskStamp = url.flatMap(Self.stamp)
+        diskStamp = stamp
     }
 
     public func open(_ url: URL) throws {
         let resolved = url.resolvingSymlinksInPath()
+        let stamp = Self.stamp(resolved)
         let bytes = try Data(contentsOf: resolved)
         let next = Snapshot(file: try TextFile.decode(bytes), url: resolved, savedBytes: bytes)
         try writeRecovery(next)
         snapshot = next
-        diskStamp = Self.stamp(resolved)
+        diskStamp = stamp
     }
 
     /// Reloads the file when it changed outside Amber and there are no unsaved edits.
@@ -64,6 +72,10 @@ public final class DocumentSession {
         guard let url else { return .unchanged }
         guard let current = Self.stamp(url) else { return .missing }
         guard current != diskStamp else { return .unchanged }
+        if let lastCheck, lastCheck.stamp == current, lastCheck.wasDirty == isDirty {
+            return .unchanged
+        }
+        lastCheck = (current, isDirty)
         let bytes = try Data(contentsOf: url)
         if bytes == snapshot.savedBytes {
             diskStamp = current
@@ -75,6 +87,11 @@ public final class DocumentSession {
         snapshot = next
         diskStamp = current
         return .reloaded
+    }
+
+    /// Writes only the recovery copy, leaving the user's file untouched.
+    public func saveRecovery() throws {
+        try writeRecovery(snapshot)
     }
 
     public func updateText(_ text: String) {
@@ -126,7 +143,8 @@ public final class DocumentSession {
         }
         return DiskStamp(
             modified: attributes[.modificationDate] as? Date,
-            size: (attributes[.size] as? NSNumber)?.intValue
+            size: (attributes[.size] as? NSNumber)?.intValue,
+            fileNumber: (attributes[.systemFileNumber] as? NSNumber)?.intValue
         )
     }
 

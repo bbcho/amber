@@ -180,12 +180,18 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         let replacement = NSAttributedString(string: text, attributes: textView.typingAttributes)
         textView.textStorage?.replaceCharacters(in: whole, with: replacement)
         textView.didChangeText()
+        if textView.mode == .visual { textView.setMode(.normal) }
         let moved = NSRange(
             location: Self.offset(line: position.line, column: position.column, in: new), length: 0
         )
         if isShowingMarkdown { sourceSelection = moved } else { textView.setSelectedRange(moved) }
-        scroll.contentView.scroll(to: origin)
-        scroll.reflectScrolledClipView(scroll.contentView)
+        if let container = textView.textContainer {
+            textView.layoutManager?.ensureLayout(for: container)
+        }
+        let clip = scroll.contentView
+        let bottom = max(textView.frame.height - clip.bounds.height, 0)
+        clip.scroll(to: NSPoint(x: origin.x, y: min(origin.y, bottom)))
+        scroll.reflectScrolledClipView(clip)
     }
 
     /// Replaces the rendered text, keeping the rendered view's scroll position.

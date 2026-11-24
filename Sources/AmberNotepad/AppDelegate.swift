@@ -124,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func createWindow(fileURL: URL? = nil, recoveryURL: URL? = nil) throws -> EditorWindow {
         if let fileURL, let existing = try owner(of: fileURL) {
             existing.show()
+            if let url = existing.documentURL { recordRecent(url, from: existing) }
             return existing
         }
         let recovery = recoveryURL ?? recoveryDirectory

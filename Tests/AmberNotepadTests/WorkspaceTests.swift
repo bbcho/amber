@@ -392,6 +392,39 @@ final class WorkspaceTests: XCTestCase {
         }
     }
 
+    func test_choosing_an_already_open_file_moves_it_to_the_top() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let first = try note("first.md", in: directory)
+            let second = try note("second.md", in: directory)
+            try app.createWindow(fileURL: first)
+            try app.createWindow(fileURL: second)
+            try app.createWindow(fileURL: first)
+            XCTAssertEqual(app.recentFiles.urls, [first, second])
+        }
+    }
+
+    func test_launching_with_files_from_finder_skips_the_recent_file() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let recent = try note("recent.md", in: directory)
+            let chosen = try note("chosen.md", in: directory)
+            let recents = directory.appendingPathComponent("Recent.json")
+            try RecentFiles().adding(recent).save(to: recents)
+            let recovery = directory.appendingPathComponent("Recovery.json")
+            let launched = AppDelegate(recoveryURL: recovery)
+            defer { for editor in launched.editors { editor.window.close() } }
+            launched.application(NSApplication.shared, openFiles: [chosen.path])
+            launched.applicationDidFinishLaunching(
+                Notification(name: NSApplication.didFinishLaunchingNotification)
+            )
+            XCTAssertFalse(launched.editors.contains { $0.documentURL == recent })
+            XCTAssertTrue(launched.editors.contains { $0.documentURL == chosen })
+        }
+    }
+
     @MainActor private func note(_ name: String, in directory: URL) throws -> URL {
         let url = directory.appendingPathComponent(name)
         try "\(name) text".write(to: url, atomically: true, encoding: .utf8)
