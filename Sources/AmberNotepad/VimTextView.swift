@@ -184,6 +184,7 @@ final class TerminalTextView: NSTextView {
 
     private func move(_ key: String, count: Int) {
         if mode == .visual { setSelectedRange(NSRange(location: visualCursor, length: 0)) }
+        let origin = enclosingScrollView?.contentView.bounds.origin ?? .zero
         for _ in 0..<count {
             switch key {
             case "h": moveLeft(nil)
@@ -201,8 +202,30 @@ final class TerminalTextView: NSTextView {
             visualCursor = selectedRange().location
             selectVisualRange()
         }
-        scrollRangeToVisible(selectedRange())
+        // AppKit recenters the view when a motion leaves the screen; Vim scrolls only as far
+        // as needed, so undo AppKit's scroll and reveal the cursor line minimally.
+        if let clip = enclosingScrollView?.contentView {
+            clip.scroll(to: origin)
+            scrollToVisible(cursorLineRect().insetBy(dx: 0, dy: -textContainerInset.height))
+        }
         needsDisplay = true
+    }
+
+    private func cursorLineRect() -> NSRect {
+        guard let layoutManager, let textContainer else { return .zero }
+        layoutManager.ensureLayout(for: textContainer)
+        let location = mode == .visual ? visualCursor : selectedRange().location
+        let glyph = layoutManager.glyphIndexForCharacter(at: location)
+        let glyphCount = layoutManager.numberOfGlyphs
+        let rect: NSRect
+        if glyph < glyphCount {
+            rect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        } else if glyphCount == 0 || !layoutManager.extraLineFragmentRect.isEmpty {
+            rect = layoutManager.extraLineFragmentRect
+        } else {
+            rect = layoutManager.lineFragmentRect(forGlyphAt: glyphCount - 1, effectiveRange: nil)
+        }
+        return rect.offsetBy(dx: 0, dy: textContainerOrigin.y)
     }
 
     private func moveWord(_ key: String, advancing: Bool = true) {

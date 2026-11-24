@@ -23,6 +23,69 @@ final class EditorTests: XCTestCase {
         }
     }
 
+    func test_vim_line_motion_scrolls_one_line_at_a_time_past_the_screen_edge() async {
+        await MainActor.run {
+            _ = NSApplication.shared
+            let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: 1000, height: 720))
+            let window = NSWindow(contentRect: terminal.frame, styleMask: [.titled],
+                                  backing: .buffered, defer: false)
+            window.contentView = terminal
+            let view = terminal.textView
+            view.string = (1...500).map { "Line \($0)" }.joined(separator: "\n")
+            terminal.layoutSubtreeIfNeeded()
+            view.setSelectedRange(NSRange(location: 0, length: 0))
+            let linePitch = view.layoutManager!.defaultLineHeight(for: Phosphor.font)
+                + view.defaultParagraphStyle!.lineSpacing
+            let screenLines = Int(view.visibleRect.height / linePitch)
+            for motion in ["j", "k"] {
+                var scrolls: [CGFloat] = []
+                for _ in 0..<(screenLines + 20) {
+                    let before = view.visibleRect.minY
+                    view.keyDown(with: key(motion))
+                    let scrolled = abs(view.visibleRect.minY - before)
+                    if scrolled > 0 { scrolls.append(scrolled) }
+                    var actual = NSRange()
+                    let screenRect = view.firstRect(
+                        forCharacterRange: view.selectedRange(), actualRange: &actual
+                    )
+                    let caret = view.convert(window.convertFromScreen(screenRect), from: nil)
+                    XCTAssertTrue(view.visibleRect.contains(caret), "\(motion) hid the cursor")
+                }
+                // The first scroll only finishes revealing a partly visible line.
+                XCTAssertFalse(scrolls.isEmpty, "\(motion) never scrolled")
+                XCTAssertLessThanOrEqual(scrolls.first ?? 0, linePitch)
+                XCTAssertEqual(Array(scrolls.dropFirst()),
+                               Array(repeating: linePitch, count: max(scrolls.count - 1, 0)))
+            }
+            XCTAssertEqual(view.visibleRect.minY, 0)
+            XCTAssertEqual(view.selectedRange().location, 0)
+            window.contentView = nil
+        }
+    }
+
+    func test_vim_motion_to_document_end_reveals_the_last_line() async {
+        await MainActor.run {
+            _ = NSApplication.shared
+            let lines = (1...100).map { "Line \($0)" }.joined(separator: "\n")
+            for text in ["", lines, lines + "\n"] {
+                let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: 1000, height: 720))
+                let window = NSWindow(contentRect: terminal.frame, styleMask: [.titled],
+                                      backing: .buffered, defer: false)
+                window.contentView = terminal
+                let view = terminal.textView
+                view.string = text
+                terminal.layoutSubtreeIfNeeded()
+                view.setSelectedRange(NSRange(location: 0, length: 0))
+                view.keyDown(with: key("G"))
+                view.keyDown(with: key("j"))
+                let end = (text as NSString).length
+                XCTAssertEqual(view.selectedRange(), NSRange(location: end, length: 0))
+                XCTAssertEqual(view.visibleRect.maxY, view.bounds.maxY, "\(text.suffix(8))")
+                window.contentView = nil
+            }
+        }
+    }
+
     func test_vim_normal_mode_moves_without_inserting_letters() async {
         await MainActor.run {
             let view = TerminalTextView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
