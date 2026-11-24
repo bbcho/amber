@@ -127,13 +127,14 @@ final class TerminalTextView: NSTextView {
             } else {
                 for _ in 0..<repetitions { deleteCharacter() }
             }
-        case "D":
-            let start = selectedRange().location
-            moveToEndOfParagraph(nil)
-            let range = NSRange(location: start, length: selectedRange().location - start)
-            register = (string as NSString).substring(with: range)
-            linewiseRegister = false
-            insertText("", replacementRange: range)
+        case "D", "C":
+            if mode == .visual {
+                replaceSelectedLines(keepingEmptyLine: key == "C")
+            } else {
+                deleteToLineEnd(count: repetitions)
+            }
+            setMode(key == "C" ? .insert : .normal)
+            if key == "D" { stepBackFromLineEnd() }
         case "p", "P": pasteRegister(after: key == "p", count: repetitions)
         case "u": undoManager?.undo()
         case "v":
@@ -275,6 +276,48 @@ final class TerminalTextView: NSTextView {
         let range = lineRange(count)
         yankLines(count)
         insertText("", replacementRange: range)
+    }
+
+    private func deleteToLineEnd(count: Int) {
+        let text = string as NSString
+        let start = selectedRange().location
+        var lastLine = text.lineRange(for: NSRange(location: start, length: 0))
+        for _ in 1..<count where NSMaxRange(lastLine) < text.length {
+            lastLine = text.lineRange(for: NSRange(location: NSMaxRange(lastLine), length: 0))
+        }
+        var contentsEnd = 0
+        text.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: lastLine)
+        guard contentsEnd > start else { return }
+        let range = NSRange(location: start, length: contentsEnd - start)
+        register = text.substring(with: range)
+        linewiseRegister = false
+        insertText("", replacementRange: range)
+    }
+
+    private func replaceSelectedLines(keepingEmptyLine: Bool) {
+        let text = string as NSString
+        let lines = text.lineRange(for: selectedRange())
+        register = text.substring(with: lines)
+        linewiseRegister = true
+        var contentsEnd = 0
+        text.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: lines)
+        let lineBreak = text.substring(
+            with: NSRange(location: contentsEnd, length: NSMaxRange(lines) - contentsEnd)
+        )
+        insertText(keepingEmptyLine ? lineBreak : "", replacementRange: lines)
+        setSelectedRange(NSRange(location: lines.location, length: 0))
+    }
+
+    // Vim's Normal mode rests on a character, never on the line break, so p pastes in place.
+    private func stepBackFromLineEnd() {
+        let text = string as NSString
+        let offset = selectedRange().location
+        let line = text.lineRange(for: NSRange(location: offset, length: 0))
+        var contentsEnd = 0
+        text.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: line)
+        guard offset == contentsEnd, offset > line.location else { return }
+        let previous = text.rangeOfComposedCharacterSequence(at: offset - 1)
+        setSelectedRange(NSRange(location: previous.location, length: 0))
     }
 
     private func deleteCharacter() {

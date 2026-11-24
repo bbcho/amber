@@ -67,9 +67,10 @@ Toggle **Edit > Vim Keybindings** for conventional text editing.
 | `h j k l`, `w b e` | Move by character, visual line, or word |
 | `0`, `^`, `$`, `gg`, `G` | Start/end of line or document (`^` currently uses line start) |
 | `i a I A`, `o O` | Insert, append, or open a line |
-| `x`, `dd`, `D`, `dw`, `cw`, `cc` | Delete/change character, line, or word |
+| `x`, `dd`, `D`, `C`, `dw`, `cw`, `cc` | Delete/change character, line, to line end, or word |
 | `yy`, `yw`, `p P` | Yank and paste |
 | `v`, then movement and `d`, `x`, `y`, or `c` | Select and edit in Visual mode |
+| `v`, then movement and `D` or `C` | Delete or change the selected lines |
 | `u`, Control-R | Undo and redo |
 | `/`, `n`, `N` | Native find, next, previous match |
 | Numeric prefix | Repeat a movement or supported edit, such as `3j` or `2dd` |
