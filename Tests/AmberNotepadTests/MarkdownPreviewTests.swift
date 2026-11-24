@@ -32,6 +32,36 @@ final class MarkdownPreviewTests: XCTestCase {
         }
     }
 
+    func test_undo_and_redo_in_preview_never_reach_the_source() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            let editor = terminal.textView
+            editor.allowsUndo = true
+            // Without an event loop, close the typing's undo group so undo could really run.
+            editor.undoManager?.groupsByEvent = false
+            editor.undoManager?.beginUndoGrouping()
+            editor.insertText("hello", replacementRange: NSRange(location: 0, length: 0))
+            editor.undoManager?.endUndoGrouping()
+            terminal.showMarkdown(MarkdownRenderer.render(editor.string))
+
+            let undo = Selector(("undo:")), redo = Selector(("redo:"))
+            for selector in [undo, redo] {
+                let item = NSMenuItem(title: "", action: selector, keyEquivalent: "")
+                XCTAssertFalse(terminal.preview.validateUserInterfaceItem(item), "\(selector)")
+            }
+
+            terminal.preview.tryToPerform(undo, with: nil)
+            XCTAssertEqual(editor.string, "hello")
+            XCTAssertEqual(editor.undoManager?.canUndo, true)
+
+            editor.undoManager?.undo()
+            terminal.preview.tryToPerform(redo, with: nil)
+            XCTAssertEqual(editor.string, "")
+            XCTAssertEqual(editor.undoManager?.canRedo, true)
+        }
+    }
+
     func test_showing_markdown_hides_editor_and_focuses_preview() async {
         await MainActor.run {
             let (terminal, window) = editorWindow()

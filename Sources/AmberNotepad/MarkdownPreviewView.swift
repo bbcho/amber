@@ -37,6 +37,18 @@ final class MarkdownPreviewView: NSTextView {
         setAccessibilityLabel("Rendered Markdown")
     }
 
+    // The window's undo manager holds the hidden source's edits. Handling undo and redo here
+    // stops Command-Z in the rendered view from changing, and autosaving, the source.
+    @objc func undo(_ sender: Any?) {}
+    @objc func redo(_ sender: Any?) {}
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(undo(_:)) || item.action == #selector(redo(_:)) {
+            return false
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         drawBlockDecorations()
         super.draw(dirtyRect)
