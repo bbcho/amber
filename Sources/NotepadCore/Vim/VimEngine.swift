@@ -340,8 +340,8 @@ public enum VimEngine {
     /// line is in view, and move the cursor by the same amount onto a first non-blank.
     private static func scrollHalfPage(down: Bool, _ count: Int?, _ result: inout VimResult,
                                        _ buffer: VimBuffer, _ screen: ScreenGeometry) {
-        if let count { result.window.scrollAmount = count }
         let lines = max(screen.linesPerPage, 1)
+        if let count { result.window.scrollAmount = min(count, lines) }
         let amount = result.window.scrollAmount ?? max(lines / 2, 1)
         let lastLine = buffer.lineCount - 1
         let line = buffer.lineIndex(of: result.window.cursor)

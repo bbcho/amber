@@ -132,4 +132,17 @@ final class VimBufferTests: XCTestCase {
         XCTAssertEqual(b.wordClass(at: 4, bigWord: false), .emoji)
         XCTAssertEqual(b.wordClass(at: 1, bigWord: true), .word)
     }
+
+    func test_scripts_vim_separates_have_word_classes_of_their_own() {
+        let b = buffer("aひカ漢한⠁")
+        let classes = (0..<b.length).map { b.wordClass(at: $0, bigWord: false) }
+        XCTAssertEqual(classes, [.word, .script(0x3040), .script(0x30A0), .script(0x4E00),
+                                 .script(0xAC00), .script(0x2800)])
+    }
+
+    func test_symbol_ranges_follow_vims_class_table() {
+        let b = buffer("×’、\u{3000}\u{A0}µ")
+        let classes = (0..<b.length).map { b.wordClass(at: $0, bigWord: false) }
+        XCTAssertEqual(classes, [.word, .punctuation, .punctuation, .blank, .blank, .word])
+    }
 }

@@ -95,6 +95,27 @@ final class VimScrollTests: XCTestCase {
         ])
     }
 
+    func test_a_count_on_control_d_and_control_u_is_capped_at_the_window_height() {
+        check([
+            Case(scrolloff: 0, line: 0, top: 0, keys: "100<C-d>", after: (10, 2, 10),
+                 effects: [top(10)]),
+            Case(scrolloff: 0, line: 0, top: 0, keys: "100<C-d>gg<C-d>", after: (10, 2, 10),
+                 effects: [top(10), top(10)]),
+            Case(scrolloff: 0, line: 0, top: 0, keys: "100<C-d><C-u>", after: (0, 2, 0),
+                 effects: [top(10), top(0)]),
+            Case(scrolloff: 0, line: 50, top: 45, keys: "100<C-u>", after: (40, 2, 35),
+                 effects: [top(35)]),
+            Case(scrolloff: 3, line: 0, top: 0, keys: "100<C-d>", after: (13, 0, 10),
+                 effects: [top(10)]),
+            Case(scrolloff: 3, line: 0, top: 0, keys: "100<C-d>gg<C-d>", after: (13, 0, 10),
+                 effects: [top(10), top(10)]),
+            Case(scrolloff: 3, line: 0, top: 0, keys: "100<C-d><C-u>", after: (3, 0, 0),
+                 effects: [top(10), top(0)]),
+            Case(scrolloff: 3, line: 50, top: 45, keys: "100<C-u>", after: (40, 2, 35),
+                 effects: [top(35)]),
+        ])
+    }
+
     func test_control_d_on_the_last_line_and_control_u_on_the_first_fail() {
         check([
             Case(scrolloff: 0, line: 99, top: 90, keys: "<C-d>", after: (99, 4, 90),
@@ -191,6 +212,10 @@ final class VimScrollTests: XCTestCase {
                  effects: [top(9)]),
             Case(scrolloff: 3, line: 50, top: 45, keys: "z<CR>", after: (50, 2, 47),
                  effects: [top(47)]),
+            Case(scrolloff: 3, line: 50, top: 45, keys: "z.", after: (50, 2, 46),
+                 effects: [.scroll(.center(line: 50))]),
+            Case(scrolloff: 3, line: 50, top: 45, keys: "10z.", after: (9, 0, 5),
+                 effects: [.scroll(.center(line: 9))]),
             Case(scrolloff: 3, line: 50, top: 45, keys: "z-", after: (50, 2, 44),
                  effects: [.scroll(.bottom(line: 53))]),
             Case(scrolloff: 3, line: 50, top: 45, keys: "10z<CR>", after: (9, 0, 6),

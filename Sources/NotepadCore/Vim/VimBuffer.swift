@@ -9,9 +9,11 @@ import Foundation
 public struct VimBuffer {
     public enum WordClass: Equatable {
         case blank, word, punctuation
-        /// Vim gives emoji above U+00FF a class of their own, so `w` stops before and after
-        /// a run of them.
+        /// Vim gives emoji a class of their own, so `w` stops before and after a run of them.
         case emoji
+        /// A script Vim gives a class of its own, named by Vim's class number: 0x3040
+        /// Hiragana, 0x30A0 Katakana, 0x4E00 CJK ideographs, 0xAC00 Hangul, 0x2800 Braille.
+        case script(Int)
     }
 
     public let text: NSString
@@ -130,19 +132,23 @@ public struct VimBuffer {
         return (column / tabstop + 1) * tabstop
     }
 
-    /// The Vim character class of the grapheme at `offset`. With `bigWord`, every non-blank
-    /// grapheme is `.word`. The end of the text is `.blank`.
+    /// The Vim character class of the grapheme at `offset`, from its first code point as
+    /// Vim classifies it. With `bigWord`, every non-blank grapheme is `.word`. Line breaks
+    /// and the end of the text are `.blank`.
     public func wordClass(at offset: Int, bigWord: Bool) -> WordClass {
         guard let end = nextGrapheme(after: offset),
               let character = text.substring(with: NSRange(location: offset, length: end - offset))
-                  .first
+                  .first,
+              !character.isNewline, let scalar = character.unicodeScalars.first
         else { return .blank }
-        if character.isWhitespace { return .blank }
+        let vimClass = VimCharacterClasses.vimClass(of: scalar)
+        if vimClass == 0 { return .blank }
         if bigWord { return .word }
-        if let scalar = character.unicodeScalars.first, scalar.value > 0xFF,
-           scalar.properties.isEmoji {
-            return .emoji
+        switch vimClass {
+        case 1: return .punctuation
+        case 2: return .word
+        case 3: return .emoji
+        default: return .script(vimClass)
         }
-        return character.isLetter || character.isNumber || character == "_" ? .word : .punctuation
     }
 }

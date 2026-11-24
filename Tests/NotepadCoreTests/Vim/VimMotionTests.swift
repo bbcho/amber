@@ -42,6 +42,13 @@ final class VimMotionTests: XCTestCase {
         assertVim("a|bc\n\nabc", "jj", "abc\n\na|bc")
     }
 
+    func test_the_up_and_down_arrows_move_like_k_and_j_with_counts() {
+        assertVim("ab|cd\nefgh\nij", "<Down>", "abcd\nef|gh\nij")
+        assertVim("ab|cd\nefgh\nij", "2<Down>", "abcd\nefgh\ni|j")
+        assertVim("ab\nefgh\ni|j", "<Up>", "ab\ne|fgh\nij")
+        assertVim("ab\nefgh\ni|j", "2<Up>", "a|b\nefgh\nij")
+    }
+
     func test_a_count_on_j_and_k_stops_at_the_first_and_last_line() {
         assertVim("a|b\ncd\nef", "5j", "ab\ncd\ne|f")
         assertVim("ab\ncd\ne|f", "2k", "a|b\ncd\nef")
@@ -90,6 +97,23 @@ final class VimMotionTests: XCTestCase {
         assertVim("|a.😀b", "3w", "a.😀|b")
     }
 
+    func test_hiragana_katakana_and_kanji_are_word_classes_of_their_own() {
+        let text = "|abcひらがなdef カタカナ漢字 x"
+        assertVim(text, "w", "abc|ひらがなdef カタカナ漢字 x")
+        assertVim(text, "2w", "abcひらがな|def カタカナ漢字 x")
+        assertVim(text, "3w", "abcひらがなdef |カタカナ漢字 x")
+        assertVim(text, "4w", "abcひらがなdef カタカナ|漢字 x")
+        assertVim(text, "5w", "abcひらがなdef カタカナ漢字 |x")
+        assertVim("abcひらがなdef カタカナ漢字 |x", "3b", "abcひらがな|def カタカナ漢字 x")
+        assertVim(text, "3e", "abcひらがなde|f カタカナ漢字 x")
+    }
+
+    func test_hangul_and_ideographic_punctuation_are_word_classes_of_their_own() {
+        assertVim("|한국어abc、x", "w", "한국어|abc、x")
+        assertVim("|한국어abc、x", "2w", "한국어abc|、x")
+        assertVim("|한국어abc、x", "3w", "한국어abc、|x")
+    }
+
     func test_w_stops_at_punctuation_and_on_an_empty_line() {
         assertVim("|foo.bar  baz\n\n  qux", "w", "foo|.bar  baz\n\n  qux")
         assertVim("|foo.bar  baz\n\n  qux", "4w", "foo.bar  baz\n|\n  qux")
@@ -113,6 +137,8 @@ final class VimMotionTests: XCTestCase {
         assertVim("foo.bar  baz\n\n  q|ux", "b", "foo.bar  baz\n\n  |qux")
         assertVim("foo.bar  baz\n\n  q|ux", "2b", "foo.bar  baz\n|\n  qux")
         assertVim("foo.bar  baz\n\n  q|ux", "ge", "foo.bar  baz\n|\n  qux")
+        assertVim("foo.bar  baz\n\n  q|ux", "2ge", "foo.bar  ba|z\n\n  qux")
+        assertVim("foo.bar  baz\n\n  q|ux", "3ge", "foo.ba|r  baz\n\n  qux")
         assertVim("ab\n|cd", "ge", "a|b\ncd")
     }
 

@@ -99,7 +99,7 @@ public struct VimWindowState: Equatable {
     /// list's length until the first Control-O after a jump.
     public var jumpIndex = 0
     /// Vim's window-local `scroll` option: the lines Control-D and Control-U move, set by
-    /// a count on either. Nil means half the page.
+    /// a count on either and capped at the page height. Nil means half the page.
     public var scrollAmount: Int?
     /// Keys typed since entering Insert or Replace mode; nil in other modes.
     public var insertSession: [VimKey]?
