@@ -20,9 +20,10 @@ not notarized for distribution. It is built for the Mac's current processor arch
 - Command-S: choose a location for a draft, or save the current file.
 - Command-Shift-S: save a separate copy.
 - Command-F: find. Option-Command-F: find and replace.
+- Command-Shift-M or `:mm`: switch between the source and rendered Markdown.
 - Standard Mac undo, redo, selection, and clipboard shortcuts work.
 
-Markdown is edited as source text. Word wrap is always on. Each window has its own document,
+Markdown is edited as source text; the rendered view is for checking how it reads. Word wrap is always on. Each window has its own document,
 undo history, Vim mode, and autosave. Opening an already-open file focuses its existing window.
 
 ## Autosave and recovery
@@ -92,6 +93,7 @@ Press `:` in Normal mode, enter a command, and press Return. Escape cancels the 
 | `:x` | Save if changed, then close this window |
 | `:e`, `:e path` | Reload or replace the current document; use Open when unnamed |
 | `:new` | Open a new empty window |
+| `:mm` | Switch between the source and the rendered Markdown view |
 
 Long forms such as `:write`, `:quit`, `:edit`, `:exit`, `:wall`, and `:wqall` work.
 Append `!` to write/edit/quit commands to explicitly overwrite or discard pending changes.
@@ -101,6 +103,16 @@ Append `!` to write/edit/quit commands to explicitly overwrite or discard pendin
 Paths expand `~`; relative paths start beside the current file, or in your home directory
 for unnamed documents. The rest of the command is treated as the literal filename, including
 spaces. Unsupported commands show an error without changing the document.
+
+## Markdown preview
+
+`:mm`, Command-Shift-M, or **View > Rendered Markdown** shows the current text rendered in
+Amber's colors: headings, lists, quotes, code blocks, tables, rules, and inline styles. The
+rendered view is read-only and reflects the text at the moment you switch. In it, `j` and `k`
+scroll by a line, Control-D and Control-U by half a screen, `gg` and `G` jump to the top and
+bottom, and counts such as `5j` work. `:` opens the command line, so `:mm` switches back,
+restoring your cursor and scroll position. Links are styled but not clickable, and images show
+their alt text.
 
 ## Launch with a keyboard shortcut
 

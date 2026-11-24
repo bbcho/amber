@@ -121,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 if !editor.hasUnsavedChanges || editor.write() { editor.close() }
             case let .edit(path, force): editor.edit(path: path, force: force)
             case .newWindow: try createWindow()
+            case .markdown: editor.toggleMarkdown()
             }
         } catch { editor.showCommandMessage(error.localizedDescription) }
     }
@@ -158,10 +159,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc private func saveDocument() { activeEditor?.write() }
     @objc private func saveAs() { activeEditor?.saveAs() }
     @objc private func toggleVim(_ sender: NSMenuItem) { activeEditor?.toggleVim(sender) }
+    @objc func toggleMarkdown(_ sender: Any?) { activeEditor?.toggleMarkdown() }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleVim(_:)) {
             menuItem.state = activeEditor?.terminal.textView.vimEnabled == true ? .on : .off
+            return activeEditor != nil
+        }
+        if menuItem.action == #selector(toggleMarkdown(_:)) {
+            menuItem.state = activeEditor?.isShowingMarkdown == true ? .on : .off
             return activeEditor != nil
         }
         if menuItem.action == #selector(saveDocument) || menuItem.action == #selector(saveAs) {
@@ -237,10 +243,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         edit.addItem(.separator())
         add("Vim Keybindings", #selector(toggleVim(_:)), to: edit, target: self)
+        let view = NSMenu(title: "View")
+        add("Rendered Markdown", #selector(toggleMarkdown(_:)), key: "m",
+            modifiers: [.command, .shift], to: view, target: self)
         let windowMenu = NSMenu(title: "Window")
         add("Minimize", #selector(NSWindow.performMiniaturize(_:)), key: "m", to: windowMenu)
         add("Zoom", #selector(NSWindow.performZoom(_:)), to: windowMenu)
-        for menu in [app, file, edit, windowMenu] {
+        for menu in [app, file, edit, view, windowMenu] {
             let item = NSMenuItem()
             item.submenu = menu
             main.addItem(item)
