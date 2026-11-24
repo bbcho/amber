@@ -70,6 +70,13 @@ final class VimPatternTests: XCTestCase {
         XCTAssertEqual(try matches("a$", in: "a\nb\na"), ["a", "a"])
     }
 
+    func test_dollar_before_trailing_flags_is_still_an_anchor() throws {
+        XCTAssertEqual(try icu("foo$\\c"), "foo$")
+        XCTAssertEqual(try icu("\\(foo$\\C\\)"), "(foo$)")
+        XCTAssertEqual(try matches("foo$\\c", in: "foo\nFOO\nfoox"), ["foo", "FOO"])
+        XCTAssertEqual(try icu("a$\\cb"), "a\\$b")
+    }
+
     func test_a_leading_star_is_literal() throws {
         XCTAssertEqual(try icu("*a"), "\\*a")
         XCTAssertEqual(try icu("^*a"), "^\\*a")

@@ -168,12 +168,19 @@ public enum VimPattern {
             return out
         }
 
+        /// Whether only `\c`, `\C`, `\v` or `\V` may sit between here and the end of the
+        /// pattern, `\|` or `\)`; Vim skips those flags when deciding that `$` is an anchor.
         func atBranchEnd() -> Bool {
-            if index >= chars.count { return true }
             var probe = self
-            guard let next = try? probe.nextToken() else { return false }
-            if case .special(let c) = next { return c == "|" || c == ")" }
-            return false
+            while probe.index < probe.chars.count {
+                guard let next = try? probe.nextToken() else { return false }
+                switch next {
+                case .flag: continue
+                case .special(let c): return c == "|" || c == ")"
+                case .literal, .anchor, .charClass: return false
+                }
+            }
+            return true
         }
 
         mutating func emitAtom(_ text: String) {

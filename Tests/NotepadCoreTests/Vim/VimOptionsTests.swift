@@ -169,4 +169,31 @@ final class VimOptionsTests: XCTestCase {
         XCTAssertFalse(result.options.ignorecase)
         XCTAssertTrue(result.options.list)
     }
+
+    func test_arithmetic_that_overflows_or_exceeds_the_maximum_is_rejected() throws {
+        var o = VimOptions()
+        try o.set("so=1000000000")
+        for argument in ["so+=9223372036854775807", "so^=9223372036854775807",
+                         "so-=-9223372036854775807", "ts=10000", "ts+=9996", "ts^=3000"] {
+            XCTAssertThrowsError(try o.set(argument), argument) {
+                XCTAssertEqual($0 as? VimError, VimError("E474: Invalid argument: \(argument)"))
+            }
+        }
+        XCTAssertThrowsError(try o.set("ts=99999999999999999999"))
+        XCTAssertEqual([o.tabstop, o.scrolloff], [4, 1_000_000_000])
+        try o.set("ts=9999")
+        XCTAssertEqual(o.tabstop, 9999)
+    }
+
+    func test_rc_reports_huge_numbers_and_keeps_loading() {
+        let huge = "9223372036854775807"
+        let rc = ["set ts=9999", "set ts+=1", "set ts^=\(huge)", "set ts=\(huge)", "set ic"]
+            .joined(separator: "\n")
+        let result = VimOptions.load(rc: rc)
+        XCTAssertEqual(result.errors, ["line 2: E474: Invalid argument: ts+=1",
+                                       "line 3: E474: Invalid argument: ts^=9223372036854775807",
+                                       "line 4: E474: Invalid argument: ts=9223372036854775807"])
+        XCTAssertEqual(result.options.tabstop, 9999)
+        XCTAssertTrue(result.options.ignorecase)
+    }
 }
