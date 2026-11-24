@@ -39,7 +39,7 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     let preview = MarkdownPreviewView()
     private(set) var isShowingMarkdown = false
     private var sourceSelection = NSRange(location: 0, length: 0)
-    private var sourceScrollOrigin = NSPoint.zero
+    private var sourceTop = (character: 0, offset: CGFloat(0))
     private let screen = NSView()
     private let header = NSView()
     private let scroll = NSScrollView()
@@ -138,8 +138,9 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     func showMarkdown(_ text: NSAttributedString) {
         if !isShowingMarkdown {
             sourceSelection = textView.selectedRange()
-            sourceScrollOrigin = scroll.contentView.bounds.origin
+            sourceTop = topOfSource()
         }
+        dismissCommandLine()
         isShowingMarkdown = true
         preview.textStorage?.setAttributedString(text)
         scroll.isHidden = true
@@ -153,14 +154,46 @@ final class TerminalView: NSView, NSTextFieldDelegate {
 
     func showSource() {
         guard isShowingMarkdown else { return }
+        dismissCommandLine()
         isShowingMarkdown = false
         previewScroll.isHidden = true
         scroll.isHidden = false
         window?.makeFirstResponder(textView)
         if textView.vimEnabled { textView.setMode(.normal) }
         textView.setSelectedRange(sourceSelection)
-        scroll.contentView.scroll(to: sourceScrollOrigin)
-        scroll.reflectScrolledClipView(scroll.contentView)
+        restoreTopOfSource(sourceTop)
+    }
+
+    private func dismissCommandLine() {
+        commandLine.stringValue = ""
+        commandLine.isHidden = true
+        status.isHidden = false
+    }
+
+    /// The source's top line as a character and an offset into its line, so it can be
+    /// found again after the text re-wraps at a new window width.
+    private func topOfSource() -> (character: Int, offset: CGFloat) {
+        let y = scroll.contentView.bounds.minY - textView.textContainerOrigin.y
+        guard let layout = textView.layoutManager, let container = textView.textContainer,
+              layout.numberOfGlyphs > 0 else { return (0, y) }
+        let glyph = layout.glyphIndex(for: NSPoint(x: 0, y: max(y, 0)), in: container)
+        let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return (layout.characterIndexForGlyph(at: glyph), y - line.minY)
+    }
+
+    private func restoreTopOfSource(_ top: (character: Int, offset: CGFloat)) {
+        var y = top.offset
+        if let layout = textView.layoutManager, layout.numberOfGlyphs > 0 {
+            let glyph = min(layout.glyphIndexForCharacter(at: top.character),
+                            layout.numberOfGlyphs - 1)
+            y += layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
+        }
+        let clip = scroll.contentView
+        let bottom = max(textView.frame.height - clip.bounds.height, 0)
+        clip.scroll(to: NSPoint(
+            x: 0, y: min(max(y + textView.textContainerOrigin.y, 0), bottom)
+        ))
+        scroll.reflectScrolledClipView(clip)
     }
 
     private func configureEditor() {

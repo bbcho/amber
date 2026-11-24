@@ -139,11 +139,13 @@ final class MarkdownPreviewTests: XCTestCase {
         await MainActor.run {
             let (terminal, window) = editorWindow()
             defer { window.contentView = nil }
-            terminal.showMarkdown(MarkdownRenderer.render("A long paragraph of text"))
+            let words = Array(repeating: "wrapping words", count: 60).joined(separator: " ")
+            terminal.showMarkdown(MarkdownRenderer.render(words))
+            let wideLines = lineCount(in: terminal.preview)
             terminal.frame.size.width = 600
             terminal.layout()
             XCTAssertLessThanOrEqual(terminal.preview.textContainer?.size.width ?? .infinity, 600)
-            XCTAssertGreaterThan(terminal.preview.textContainer?.size.width ?? 0, 0)
+            XCTAssertGreaterThan(lineCount(in: terminal.preview), wideLines)
         }
     }
 
@@ -186,6 +188,134 @@ final class MarkdownPreviewTests: XCTestCase {
             XCTAssertGreaterThan(pixel(leftOf: "coded", by: 3)?.alphaComponent ?? 0, 0.05)
             XCTAssertEqual(pixel(leftOf: "after", by: 3)?.alphaComponent ?? 1, 0, accuracy: 0.01)
         }
+    }
+
+    func test_switching_views_closes_an_open_command_line() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            for show in [{ terminal.showMarkdown(MarkdownRenderer.render("# Hi")) },
+                         { terminal.showSource() }] {
+                terminal.beginCommand()
+                show()
+                XCTAssertTrue(terminal.commandLine.isHidden)
+                XCTAssertFalse(terminal.status.isHidden)
+            }
+        }
+    }
+
+    func test_adjacent_code_blocks_draw_separate_boxes() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            let preview = terminal.preview
+            terminal.showMarkdown(MarkdownRenderer.render("```\nfirst\n```\n\n```\nsecond\n```"))
+            let image = preview.bitmapImageRepForCachingDisplay(in: preview.bounds)!
+            preview.cacheDisplay(in: preview.bounds, to: image)
+            let gapY = (usedRect(of: "first", in: preview).maxY
+                + usedRect(of: "second", in: preview).minY) / 2 + preview.textContainerOrigin.y
+            let x = preview.textContainerOrigin.x + 2
+            let scale = CGFloat(image.pixelsWide) / preview.bounds.width
+            let gap = image.colorAt(x: Int(x * scale), y: Int(gapY * scale))
+            XCTAssertEqual(gap?.alphaComponent ?? 1, 0, accuracy: 0.01)
+        }
+    }
+
+    func test_partial_redraw_still_draws_decorations() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            let preview = terminal.preview
+            let filler = (1...40).map { "Paragraph \($0)" }.joined(separator: "\n\n")
+            terminal.showMarkdown(MarkdownRenderer.render(filler + "\n\n```\ncoded\n```"))
+            let code = usedRect(of: "coded", in: preview)
+                .offsetBy(dx: 0, dy: preview.textContainerOrigin.y)
+            let region = NSRect(
+                x: 0, y: code.minY, width: preview.bounds.width, height: code.height
+            )
+            let image = preview.bitmapImageRepForCachingDisplay(in: region)!
+            preview.cacheDisplay(in: region, to: image)
+            let scale = CGFloat(image.pixelsWide) / region.width
+            let pixel = image.colorAt(
+                x: Int((preview.textContainerOrigin.x + 2) * scale), y: Int(code.height / 2 * scale)
+            )
+            XCTAssertGreaterThan(pixel?.alphaComponent ?? 0, 0.05)
+        }
+    }
+
+    func test_source_position_survives_a_resize_while_rendered() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            let editor = terminal.textView
+            let line = String(repeating: "word ", count: 30)
+            editor.string = (1...300).map { "\($0) " + line }.joined(separator: "\n")
+            terminal.layoutSubtreeIfNeeded()
+            editor.layoutManager!.ensureLayout(for: editor.textContainer!)
+            let clip = editor.enclosingScrollView!.contentView
+            clip.scroll(to: NSPoint(x: 0, y: 3000))
+            editor.enclosingScrollView!.reflectScrolledClipView(clip)
+            let topLine = logicalLine(atTopOf: editor)
+            XCTAssertEqual(clip.bounds.minY, 3000)
+
+            terminal.showMarkdown(MarkdownRenderer.render("# Hi"))
+            terminal.frame.size.width = 560
+            terminal.layout()
+            terminal.showSource()
+
+            XCTAssertEqual(logicalLine(atTopOf: editor), topLine)
+        }
+    }
+
+    func test_preview_find_uses_the_find_bar() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            XCTAssertTrue(terminal.preview.usesFindBar)
+        }
+    }
+
+    func test_editing_actions_in_preview_never_reach_the_source() async {
+        await MainActor.run {
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            terminal.textView.string = "source"
+            terminal.showMarkdown(MarkdownRenderer.render("source"))
+            for action in ["paste:", "cut:", "delete:"] {
+                let selector = Selector(action)
+                let item = NSMenuItem(title: "", action: selector, keyEquivalent: "")
+                XCTAssertFalse(terminal.preview.validateUserInterfaceItem(item), action)
+                terminal.preview.tryToPerform(selector, with: nil)
+            }
+            XCTAssertEqual(terminal.textView.string, "source")
+            XCTAssertEqual(terminal.preview.string, "source")
+        }
+    }
+
+    @MainActor private func usedRect(of needle: String, in view: NSTextView) -> NSRect {
+        let layout = view.layoutManager!
+        let range = (view.string as NSString).range(of: needle)
+        let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        return layout.lineFragmentUsedRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+    }
+
+    @MainActor private func lineCount(in view: NSTextView) -> Int {
+        let layout = view.layoutManager!
+        layout.ensureLayout(for: view.textContainer!)
+        var count = 0
+        layout.enumerateLineFragments(
+            forGlyphRange: NSRange(location: 0, length: layout.numberOfGlyphs)
+        ) { _, _, _, _, _ in count += 1 }
+        return count
+    }
+
+    @MainActor private func logicalLine(atTopOf view: NSTextView) -> Int {
+        let layout = view.layoutManager!
+        let point = NSPoint(x: 1, y: view.visibleRect.minY - view.textContainerOrigin.y + 1)
+        let glyph = layout.glyphIndex(for: point, in: view.textContainer!)
+        let offset = layout.characterIndexForGlyph(at: glyph)
+        let prefix = (view.string as NSString).substring(to: offset)
+        return prefix.filter { $0 == "\n" }.count + 1
     }
 
     @MainActor private func layoutX(of needle: String, in view: NSTextView) -> CGFloat {

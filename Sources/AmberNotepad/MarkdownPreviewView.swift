@@ -21,6 +21,8 @@ final class MarkdownPreviewView: NSTextView {
         self.init(frame: .zero, textContainer: container)
         isEditable = false
         isSelectable = true
+        usesFindBar = true
+        isIncrementalSearchingEnabled = true
         drawsBackground = false
         textContainerInset = NSSize(width: 8, height: 8)
         isVerticallyResizable = true
@@ -50,37 +52,43 @@ final class MarkdownPreviewView: NSTextView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        drawBlockDecorations()
+        drawBlockDecorations(in: dirtyRect)
         super.draw(dirtyRect)
     }
 
-    /// Quote bars and code boxes sit in the indent `MarkdownBlock.indent` leaves for them.
-    private func drawBlockDecorations() {
-        guard let storage = textStorage, let layout = layoutManager else { return }
+    /// Quote bars and code boxes sit in the indent `MarkdownDecoration` leaves for them.
+    private func drawBlockDecorations(in dirtyRect: NSRect) {
+        guard let storage = textStorage, let layout = layoutManager,
+              let container = textContainer else { return }
         let origin = textContainerOrigin
-        storage.enumerateAttribute(
-            .markdownBlock, in: NSRange(location: 0, length: storage.length)
-        ) { value, range, _ in
-            guard let raw = value as? String, let block = MarkdownBlock(rawValue: raw) else {
-                return
-            }
+        let dirtyGlyphs = layout.glyphRange(
+            forBoundingRect: dirtyRect.offsetBy(dx: -origin.x, dy: -origin.y), in: container
+        )
+        let dirtyCharacters = layout.characterRange(
+            forGlyphRange: dirtyGlyphs, actualGlyphRange: nil
+        )
+        storage.enumerateAttribute(.markdownBlock, in: dirtyCharacters) { value, range, _ in
+            guard let decoration = value as? MarkdownDecoration else { return }
             let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-            var area = NSRect.null
-            layout.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, _, _ in
-                area = area.union(rect)
+            var used = NSRect.null
+            var right: CGFloat = 0
+            layout.enumerateLineFragments(forGlyphRange: glyphs) { rect, usedRect, _, _, _ in
+                used = used.union(usedRect)
+                right = max(right, rect.maxX)
             }
-            guard !area.isNull else { return }
-            let style = storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
-            let textStart = (style as? NSParagraphStyle)?.headIndent ?? block.indent
-            let left = origin.x + textStart - block.indent
-            switch block {
-            case .quote:
-                Phosphor.amber.withAlphaComponent(0.6).setFill()
-                NSRect(x: left, y: area.minY + origin.y, width: 3, height: area.height).fill()
-            case .code:
+            guard !used.isNull else { return }
+            let left = origin.x + decoration.baseIndent
+            let top = used.minY + origin.y
+            Phosphor.amber.withAlphaComponent(0.6).setFill()
+            for level in 0..<decoration.quoteDepth {
+                let x = left + CGFloat(level) * MarkdownDecoration.quoteStep
+                NSRect(x: x, y: top, width: 3, height: used.height).fill()
+            }
+            if decoration.isCode {
+                let boxLeft = left + CGFloat(decoration.quoteDepth) * MarkdownDecoration.quoteStep
                 Phosphor.amber.withAlphaComponent(0.08).setFill()
-                NSRect(x: left, y: area.minY + origin.y, width: area.maxX + origin.x - left,
-                       height: area.height).fill()
+                NSRect(x: boxLeft, y: top, width: origin.x + right - boxLeft,
+                       height: used.height).fill()
             }
         }
     }

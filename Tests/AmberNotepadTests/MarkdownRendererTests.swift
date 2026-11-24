@@ -37,15 +37,17 @@ final class MarkdownRendererTests: XCTestCase {
             XCTAssertEqual(rendered.string, "let x = 1\nafter")
             XCTAssertTrue(font(rendered, at: "let x").fontDescriptor.symbolicTraits
                 .contains(.monoSpace))
-            XCTAssertEqual(attribute(.markdownBlock, rendered, at: "let x") as? String, "code")
-            XCTAssertNil(attribute(.markdownBlock, rendered, at: "after"))
+            XCTAssertEqual(decoration(rendered, at: "let x")?.isCode, true)
+            XCTAssertEqual(decoration(rendered, at: "let x")?.quoteDepth, 0)
+            XCTAssertNil(decoration(rendered, at: "after"))
         }
     }
 
     func test_block_quotes_get_a_left_bar() async {
         await MainActor.run {
             let rendered = render("> quoted")
-            XCTAssertEqual(attribute(.markdownBlock, rendered, at: "quoted") as? String, "quote")
+            XCTAssertEqual(decoration(rendered, at: "quoted")?.quoteDepth, 1)
+            XCTAssertEqual(decoration(rendered, at: "quoted")?.isCode, false)
             XCTAssertEqual(paragraph(rendered, at: "quoted").headIndent, 11)
         }
     }
@@ -107,7 +109,68 @@ final class MarkdownRendererTests: XCTestCase {
             ) { value, _, _ in
                 maximum = max(maximum, (value as? NSParagraphStyle)?.headIndent ?? 0)
             }
-            XCTAssertLessThanOrEqual(maximum, 240)
+            XCTAssertEqual(maximum, 240)
+        }
+    }
+
+    func test_nested_quotes_and_code_inside_quotes_keep_every_bar() async {
+        await MainActor.run {
+            let nested = render("> outer\n>\n> > inner")
+            XCTAssertEqual(decoration(nested, at: "inner")?.quoteDepth, 2)
+            XCTAssertEqual(paragraph(nested, at: "inner").headIndent, 22)
+            let code = render("> ```\n> coded\n> ```")
+            XCTAssertEqual(decoration(code, at: "coded")?.isCode, true)
+            XCTAssertEqual(decoration(code, at: "coded")?.quoteDepth, 1)
+            XCTAssertEqual(paragraph(code, at: "coded").headIndent, 17)
+        }
+    }
+
+    func test_each_block_gets_its_own_decoration() async {
+        await MainActor.run {
+            let rendered = render("```\nfirst\n```\n\n```\nsecond\n```")
+            let first = decoration(rendered, at: "first")
+            XCTAssertNotNil(first)
+            XCTAssertFalse(first === decoration(rendered, at: "second"))
+        }
+    }
+
+    func test_quote_bar_stays_at_the_quote_edge_around_lists() async {
+        await MainActor.run {
+            let quoted = render("> - item\n>\n> para")
+            XCTAssertTrue(decoration(quoted, at: "item") === decoration(quoted, at: "para"))
+            XCTAssertEqual(decoration(quoted, at: "item")?.baseIndent, 0)
+            let listed = render("- item\n\n  > inside")
+            XCTAssertEqual(decoration(listed, at: "inside")?.baseIndent, 20)
+        }
+    }
+
+    func test_inline_code_in_a_heading_keeps_the_heading_size() async {
+        await MainActor.run {
+            let rendered = render("# Use `code` here")
+            let code = font(rendered, at: "code")
+            XCTAssertEqual(code.pointSize, font(rendered, at: "Use").pointSize)
+            XCTAssertTrue(code.fontDescriptor.symbolicTraits.contains(.monoSpace))
+        }
+    }
+
+    func test_table_columns_fit_their_widest_cell() async {
+        await MainActor.run {
+            let long = "a cell much wider than one hundred and sixty points of text"
+            let rendered = render("| a | b |\n|---|---|\n| \(long) | x |")
+            let width = NSAttributedString(
+                string: long, attributes: [.font: MarkdownRenderer.bodyFont]
+            ).size().width
+            let stops = paragraph(rendered, at: "x").tabStops
+            XCTAssertEqual(stops.first?.location, ceil(width) + 24)
+            XCTAssertEqual(paragraph(rendered, at: "b").tabStops.first?.location,
+                           stops.first?.location)
+        }
+    }
+
+    func test_empty_table_cells_keep_columns_aligned() async {
+        await MainActor.run {
+            let rendered = render("| a | b | c |\n|---|---|---|\n|  | 2 | 3 |\n| 1 |  | 3 |")
+            XCTAssertEqual(rendered.string, "a\tb\tc\n\t2\t3\n1\t\t3")
         }
     }
 
@@ -139,6 +202,12 @@ final class MarkdownRendererTests: XCTestCase {
         _ key: NSAttributedString.Key, _ text: NSAttributedString, at needle: String
     ) -> Any? {
         text.attribute(key, at: location(text, of: needle), effectiveRange: nil)
+    }
+
+    private func decoration(
+        _ text: NSAttributedString, at needle: String
+    ) -> MarkdownDecoration? {
+        attribute(.markdownBlock, text, at: needle) as? MarkdownDecoration
     }
 
     private func font(_ text: NSAttributedString, at needle: String) -> NSFont {

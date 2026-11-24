@@ -271,6 +271,26 @@ final class WorkspaceTests: XCTestCase {
         }
     }
 
+    func test_menu_check_mark_follows_the_active_window() async throws {
+        try await MainActor.run {
+            let (app, directory) = try workspace()
+            defer { cleanup(app, directory) }
+            let first = try app.createWindow()
+            let second = try app.createWindow()
+            let item = NSMenuItem(
+                title: "Rendered Markdown", action: #selector(AppDelegate.toggleMarkdown(_:)),
+                keyEquivalent: "m"
+            )
+            // Without a key window in tests, the most recent window is the active one.
+            first.toggleMarkdown()
+            XCTAssertTrue(app.validateMenuItem(item))
+            XCTAssertEqual(item.state, .off)
+            second.toggleMarkdown()
+            XCTAssertTrue(app.validateMenuItem(item))
+            XCTAssertEqual(item.state, .on)
+        }
+    }
+
     @MainActor private func workspace() throws -> (AppDelegate, URL) {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory
