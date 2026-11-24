@@ -300,6 +300,26 @@ one run is limited to 100,000 keys, so a runaway macro can't hang the app.
   splitting the whole prefix into lines on every keystroke and computes line and column from
   the engine's line index.
 
+## Changes since approval (2026-11-24)
+
+Three features shipped after this design was approved: Markdown preview, recent files with
+live reload, and quiet reloads with follow mode and path completion. They add the following
+to this design:
+
+- **Live reload becomes an option:** `autoread`, default on, with `:set noautoread` to turn
+  it off. `:checktime` still checks immediately, and quiet reloads and follow mode are
+  unchanged.
+- **The preview's scroll keys move onto the engine:** `j`, `k`, counts, `gg`, `G` and
+  Control-D/U in `MarkdownPreviewView` reuse the engine's scroll handling. The preview stays
+  read-only.
+- **Command line:** Tab path completion stays as built. `/` and `?` prompts reuse the same
+  footer field. History browsing uses Up and Down, so it doesn't conflict with Tab.
+- **The adapter keeps the API the rest of the app uses:** `TerminalTextView.mode`,
+  `setMode(_:)`, `vimEnabled`, `modeDidChange` and `commandRequested`. The `Mode` cases gain
+  Replace, Visual Line and Visual Block, and the status shows them.
+- **Reload integration:** `TerminalView.replaceSourceText` keeps working. A reload sets the
+  engine to Normal mode, clears pending keys, and moves marks by line where the file allows.
+
 ## Left to the builder
 
 - Internal file split inside `Vim/`, the exact representation of pending keys, and the
