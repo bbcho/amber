@@ -160,8 +160,79 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         scroll.isHidden = false
         window?.makeFirstResponder(textView)
         if textView.vimEnabled { textView.setMode(.normal) }
-        textView.setSelectedRange(sourceSelection)
+        let length = (textView.string as NSString).length
+        let cursor = min(sourceSelection.location, length)
+        textView.setSelectedRange(NSRange(location: cursor, length: 0))
         restoreTopOfSource(sourceTop)
+    }
+
+    /// Replaces the editor's text as one undoable change, keeping the cursor's line and
+    /// column and the scroll position. Used when the file changes outside Amber.
+    func replaceSourceText(_ text: String) {
+        let old = textView.string as NSString
+        let new = text as NSString
+        let cursor = isShowingMarkdown
+            ? sourceSelection.location : textView.selectedRange().location
+        let position = Self.linePosition(of: min(cursor, old.length), in: old)
+        let origin = scroll.contentView.bounds.origin
+        let whole = NSRange(location: 0, length: old.length)
+        guard textView.shouldChangeText(in: whole, replacementString: text) else { return }
+        let replacement = NSAttributedString(string: text, attributes: textView.typingAttributes)
+        textView.textStorage?.replaceCharacters(in: whole, with: replacement)
+        textView.didChangeText()
+        if textView.mode == .visual { textView.setMode(.normal) }
+        let moved = NSRange(
+            location: Self.offset(line: position.line, column: position.column, in: new), length: 0
+        )
+        if isShowingMarkdown { sourceSelection = moved } else { textView.setSelectedRange(moved) }
+        if let container = textView.textContainer {
+            textView.layoutManager?.ensureLayout(for: container)
+        }
+        let clip = scroll.contentView
+        let bottom = max(textView.frame.height - clip.bounds.height, 0)
+        clip.scroll(to: NSPoint(x: origin.x, y: min(origin.y, bottom)))
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    /// Replaces the rendered text, keeping the rendered view's scroll position.
+    func updateMarkdown(_ text: NSAttributedString) {
+        let clip = previewScroll.contentView
+        let origin = clip.bounds.origin
+        preview.textStorage?.setAttributedString(text)
+        layoutSubtreeIfNeeded()
+        let bottom = max(preview.frame.height - clip.bounds.height, 0)
+        clip.scroll(to: NSPoint(x: origin.x, y: min(origin.y, bottom)))
+        previewScroll.reflectScrolledClipView(clip)
+    }
+
+    private static func linePosition(
+        of offset: Int, in text: NSString
+    ) -> (line: Int, column: Int) {
+        var lineStart = 0
+        text.getLineStart(&lineStart, end: nil, contentsEnd: nil,
+                          for: NSRange(location: offset, length: 0))
+        var line = 0
+        var start = 0
+        while start < lineStart {
+            start = NSMaxRange(text.lineRange(for: NSRange(location: start, length: 0)))
+            line += 1
+        }
+        return (line, offset - lineStart)
+    }
+
+    private static func offset(line: Int, column: Int, in text: NSString) -> Int {
+        var start = 0
+        for _ in 0..<line {
+            let next = NSMaxRange(text.lineRange(for: NSRange(location: start, length: 0)))
+            guard next > start else { break }
+            start = next
+        }
+        var contentsEnd = 0
+        text.getLineStart(nil, end: nil, contentsEnd: &contentsEnd,
+                          for: NSRange(location: start, length: 0))
+        let target = min(start + column, contentsEnd)
+        guard target < text.length else { return target }
+        return text.rangeOfComposedCharacterSequence(at: target).location
     }
 
     private func dismissCommandLine() {

@@ -17,6 +17,7 @@ not notarized for distribution. It is built for the Mac's current processor arch
 ## Use
 
 - Command-N: new window. Command-O: open text or Markdown files in separate windows.
+- File > Open Recent: the 10 files you opened or saved most recently, newest first.
 - Command-S: choose a location for a draft, or save the current file.
 - Command-Shift-S: save a separate copy.
 - Command-F: find. Option-Command-F: find and replace.
@@ -25,6 +26,20 @@ not notarized for distribution. It is built for the Mac's current processor arch
 
 Markdown is edited as source text; the rendered view is for checking how it reads. Word wrap is always on. Each window has its own document,
 undo history, Vim mode, and autosave. Opening an already-open file focuses its existing window.
+
+## Reopening and outside changes
+
+Amber reopens every window that was open when you quit. If there is nothing to restore,
+for example after closing the last window, it opens the most recent file that still exists,
+or an empty window if none do.
+
+Each window checks its file twice a second, like Vim's `autoread`. When another program or
+an agent changes the file and you have no unsaved edits, Amber reloads it, keeping your
+cursor's line and column and your scroll position, and the rendered Markdown view updates
+too. The reload is one undo step. Undoing it shows your earlier text again but does not
+write it over the file: autosave keeps it as a draft until you press Command-S. If you have
+unsaved edits, Amber keeps your text and
+shows that the file changed outside the app; press Command-S to choose what to keep.
 
 ## Autosave and recovery
 
@@ -94,6 +109,7 @@ Press `:` in Normal mode, enter a command, and press Return. Escape cancels the 
 | `:e`, `:e path` | Reload or replace the current document; use Open when unnamed |
 | `:new` | Open a new empty window |
 | `:mm` | Switch between the source and the rendered Markdown view |
+| `:checktime` | Check every window's file for outside changes now |
 
 Long forms such as `:write`, `:quit`, `:edit`, `:exit`, `:wall`, and `:wqall` work.
 Append `!` to write/edit/quit commands to explicitly overwrite or discard pending changes.

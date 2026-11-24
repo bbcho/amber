@@ -3,8 +3,12 @@ import NotepadCore
 import UniformTypeIdentifiers
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private let legacyRecoveryURL: URL
+    private var recentFilesURL: URL {
+        legacyRecoveryURL.deletingLastPathComponent().appendingPathComponent("Recent.json")
+    }
+    private(set) var recentFiles: RecentFiles
     private var recoveryDirectory: URL {
         legacyRecoveryURL.deletingLastPathComponent().appendingPathComponent("Drafts")
     }
@@ -13,7 +17,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var startupFailed = false
     private var pendingOpenURLs: [URL] = []
 
-    init(recoveryURL: URL) { legacyRecoveryURL = recoveryURL }
+    init(recoveryURL: URL) {
+        legacyRecoveryURL = recoveryURL
+        recentFiles = RecentFiles.load(
+            from: recoveryURL.deletingLastPathComponent().appendingPathComponent("Recent.json")
+        )
+    }
 
     private var activeEditor: EditorWindow? {
         editors.first { $0.window === NSApp.keyWindow }
@@ -25,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NSWindow.allowsAutomaticWindowTabbing = false
         buildMenu()
         do {
-            try restoreWindows()
+            try restoreWindows(reopeningRecent: pendingOpenURLs.isEmpty)
             didLaunch = true
             let pending = pendingOpenURLs
             pendingOpenURLs = []
@@ -38,9 +47,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
-    func restoreWindows() throws {
+    /// Restores every window open at quit. With none, reopens the most recent file that
+    /// still exists, unless the launch is already opening files from Finder.
+    func restoreWindows(reopeningRecent: Bool = true) throws {
         for url in try recoveryFiles() { try createWindow(recoveryURL: url) }
-        if editors.isEmpty { try createWindow() }
+        guard editors.isEmpty else { return }
+        let fileManager = FileManager.default
+        if reopeningRecent,
+           let recent = recentFiles.urls.first(where: { fileManager.fileExists(atPath: $0.path) }) {
+            do {
+                try createWindow(fileURL: recent)
+                return
+            } catch {
+                try createWindow().showCommandMessage(
+                    "Could not reopen \(recent.lastPathComponent): \(error.localizedDescription)"
+                )
+                return
+            }
+        }
+        try createWindow()
+    }
+
+    private func recordRecent(_ url: URL, from editor: EditorWindow) {
+        recentFiles = recentFiles.adding(url)
+        do { try recentFiles.save(to: recentFilesURL) }
+        catch { editor.showCommandMessage("Recent files not saved: \(error.localizedDescription)") }
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let fileManager = FileManager.default
+        let urls = recentFiles.urls.filter { fileManager.fileExists(atPath: $0.path) }
+        let names = urls.map(\.lastPathComponent)
+        for url in urls {
+            let name = url.lastPathComponent
+            let title = names.filter { $0 == name }.count > 1
+                ? "\(name) — \(url.deletingLastPathComponent().lastPathComponent)" : name
+            let item = NSMenuItem(title: title, action: #selector(openRecent(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = url
+            item.toolTip = url.path
+            menu.addItem(item)
+        }
+        if !urls.isEmpty { menu.addItem(.separator()) }
+        add("Clear Menu", #selector(clearRecent), to: menu, target: self)
+    }
+
+    @objc private func openRecent(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        openFile(url)
+    }
+
+    @objc private func clearRecent() {
+        recentFiles = RecentFiles()
+        do { try recentFiles.save(to: recentFilesURL) }
+        catch { activeEditor?.showCommandMessage(error.localizedDescription) }
     }
 
     private func recoveryFiles() throws -> [URL] {
@@ -62,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func createWindow(fileURL: URL? = nil, recoveryURL: URL? = nil) throws -> EditorWindow {
         if let fileURL, let existing = try owner(of: fileURL) {
             existing.show()
+            if let url = existing.documentURL { recordRecent(url, from: existing) }
             return existing
         }
         let recovery = recoveryURL ?? recoveryDirectory
@@ -73,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         editor.onCommand = { [weak self] editor, command in
             self?.execute(command, in: editor)
         }
+        editor.onFileUsed = { [weak self] editor, url in self?.recordRecent(url, from: editor) }
         editor.onClose = { [weak self] editor in
             self?.editors.removeAll { $0 === editor }
         }
@@ -122,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             case let .edit(path, force): editor.edit(path: path, force: force)
             case .newWindow: try createWindow()
             case .markdown: editor.toggleMarkdown()
+            case .checkTime: for candidate in editors { candidate.checkDisk() }
             }
         } catch { editor.showCommandMessage(error.localizedDescription) }
     }
@@ -170,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             menuItem.state = activeEditor?.isShowingMarkdown == true ? .on : .off
             return activeEditor != nil
         }
+        if menuItem.action == #selector(clearRecent) { return !recentFiles.urls.isEmpty }
         if menuItem.action == #selector(saveDocument) || menuItem.action == #selector(saveAs) {
             return activeEditor != nil
         }
@@ -213,6 +279,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let file = NSMenu(title: "File")
         add("New", #selector(newDocument), key: "n", to: file, target: self)
         add("Open…", #selector(openDocument), key: "o", to: file, target: self)
+        let recentMenu = NSMenu(title: "Open Recent")
+        recentMenu.delegate = self
+        let recentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
+        recentItem.submenu = recentMenu
+        file.addItem(recentItem)
         file.addItem(.separator())
         add("Save", #selector(saveDocument), key: "s", to: file, target: self)
         add("Save As…", #selector(saveAs), key: "s", modifiers: [.command, .shift],
