@@ -45,8 +45,7 @@ including its "Decisions from the builder review" and "Changes since approval" s
 - **Tests:** run with `./scripts/test.sh`, which runs two XCTest bundles, so sum both. With
   the screen locked, the 11 tests that read recovery files fail with "Operation not
   permitted"; that is environmental, not a defect.
-- **Commits:** commit after each task, staging files explicitly. Messages end with
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **Commits:** commit after each task, staging files explicitly. No Co-Authored-By trailer
 - **Keep passing:** every existing test, including the Vim key tests in `EditorTests` and
   `CommandBarTests`, and the reload, preview and workspace tests.
 
