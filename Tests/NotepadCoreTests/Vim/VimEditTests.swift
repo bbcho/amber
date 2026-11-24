@@ -326,6 +326,35 @@ final class VimEditTests: XCTestCase {
         assertVim("a|bc\nd", "gix<Esc>", "a|xbc\nd")
     }
 
+    func test_tab_in_insert_mode_inserts_spaces_to_the_next_tabstop_under_expandtab() {
+        assertVim("a|b", "i<Tab>x<Esc>", "a   |xb")
+        assertVim("|ab", "i<Tab>x<Esc>.", "        |xxab")
+        assertVim("a|b", "2i<Tab><Esc>", "a      | b")
+    }
+
+    func test_tab_in_insert_mode_inserts_a_tab_without_expandtab() {
+        assertVim("|ab", "i<Tab>x<Esc>.", "\t\t|xxab", session: session { $0.expandtab = false })
+    }
+
+    func test_enter_in_insert_mode_breaks_the_line() {
+        assertVim("a|bc", "i<CR><Esc>", "a\n|bc")
+        assertVim("a|bc\r\nd", "i<CR><Esc>", "a\r\n|bc\r\nd")
+        assertVim("|abc", "ofoo<CR>bar<Esc>.", "abc\nfoo\nbar\nfoo\nba|r")
+    }
+
+    func test_enter_in_insert_mode_copies_the_indent_with_autoindent() {
+        let indented = session { $0.autoindent = true }
+        assertVim("  a|bc", "i<CR><Esc>", "  a\n | bc", session: indented)
+        assertVim("  |abc", "ofoo<CR>bar<Esc>.", "  abc\n  foo\n  bar\n  foo\n  ba|r",
+                  session: indented)
+        assertVim("  a|bc", "2ix<CR>y<Esc>", "  ax\n  yx\n  |ybc", session: indented)
+    }
+
+    func test_the_dot_register_holds_tabs_and_line_breaks_as_typed() {
+        let run = assertVim("a|b", "ix<Tab>y<CR>z<Esc>", "ax  y\n|zb")
+        XCTAssertEqual(run.register("."), charwise("x\ty\nz"))
+    }
+
     func test_the_dot_register_holds_the_last_inserted_text() {
         let run = assertVim("a|bc", "ixy<Esc>\".p", "axyx|ybc")
         XCTAssertEqual(run.register("."), charwise("xy"))
@@ -470,6 +499,11 @@ final class VimEditTests: XCTestCase {
         assertVim("|7", "5<C-a>.", "1|7")
         assertVim("|a\nb\nc\nd\ne", "3J2.", "a b c| d\ne")
         assertVim("a |b c d", "\"adw.", "a |d")
+    }
+
+    func test_dot_after_a_put_from_a_numbered_register_uses_the_next_one() {
+        assertVim("|a\nb\nc\nd", "dddddd\"1p.", "d\nc\n|b")
+        assertVim("|a\nb\nc\nd", "dddddd\"1p..", "d\nc\nb\n|a")
     }
 
     func test_dot_with_a_register_uses_that_register() {

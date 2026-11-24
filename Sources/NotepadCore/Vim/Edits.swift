@@ -118,14 +118,19 @@ extension VimEngine {
     }
 
     /// `.` asks the adapter to feed the last change's keys back, with a new count or
-    /// register in place of the recorded one.
+    /// register in place of the recorded one. A recorded register `1` to `8` becomes the
+    /// next one, so `"1p..` puts registers 1, 2 and 3 (Vim's `redo-register`).
     private static func repeatChange(_ input: CommandInput, _ result: inout VimResult) {
         guard var change = result.session.lastChange else {
             fail(&result)
             return
         }
         if let count = input.count { change.count = count }
-        if let register = input.register { change.register = register }
+        if let register = input.register {
+            change.register = register
+        } else if let number = change.register?.wholeNumberValue, (1...8).contains(number) {
+            change.register = Character(String(number + 1))
+        }
         var keys: [VimKey] = []
         if let register = change.register {
             keys += [VimKey(.character("\"")), VimKey(.character(register))]
@@ -177,46 +182,78 @@ extension VimEngine {
         result.window.changeInProgress = input.change
     }
 
-    /// Insert and Replace mode: typed characters go into the text and Escape returns to
-    /// Normal mode. The adapter lets AppKit insert typed text; the engine sees these keys
-    /// when it replays them for `.`.
+    /// Insert and Replace mode: typed characters, Tab and Enter go into the text and Escape
+    /// returns to Normal mode. The adapter lets AppKit insert typed text; the engine sees
+    /// these keys when it replays them for `.`.
     static func insertMode(_ key: VimKey, _ result: inout VimResult, _ b: VimBuffer) {
         result.window.changeInProgress?.keys.append(key)
-        switch key.base {
-        case .escape:
+        if key == VimKey(.escape) {
             finishInsert(&result, b)
-        case .character(let character):
-            guard !key.control else { return }
-            type(character, &result, b)
-        case .enter, .backspace, .tab, .up, .down, .left, .right, .home, .end, .pageUp,
-             .pageDown, .delete:
             return
         }
-    }
-
-    private static func type(_ character: Character, _ result: inout VimResult, _ b: VimBuffer) {
         let cursor = result.window.cursor
-        let text = String(character)
+        let line = b.lineIndex(of: cursor)
+        guard let text = typedText(key, after: b.substring(b.lineStart(line)..<cursor),
+                                   result.session.options, lineBreak: b.lineBreak(near: line))
+        else { return }
         var range = NSRange(location: cursor, length: 0)
-        if result.window.mode == .replace, !b.isLineEnd(cursor),
+        if result.window.mode == .replace, key != VimKey(.enter), !b.isLineEnd(cursor),
            let next = b.nextGrapheme(after: cursor) {
             range.length = next - cursor
         }
         result.edits.append(TextEdit(range: range, replacement: text))
         result.window.cursor = cursor + text.utf16.count
-        result.window.insertSession?.inserted += text
+        result.window.insertSession?.typed.append(key)
     }
 
-    /// Escape: adds the extra copies a count asks for, sets the `^` mark and the `.`
-    /// register, records the change for `.`, and steps the cursor left as Vim does.
+    /// The text a key typed in Insert mode adds after `linePrefix`, the line's text before
+    /// the cursor, or nil for keys that insert nothing here. Tab reaches the next tabstop
+    /// with spaces under `expandtab`; Enter copies the indent under `autoindent`.
+    private static func typedText(_ key: VimKey, after linePrefix: String,
+                                  _ options: VimOptions, lineBreak: String) -> String? {
+        guard !key.control else { return nil }
+        switch key.base {
+        case .character(let character):
+            return String(character)
+        case .tab:
+            guard options.expandtab, options.tabstop > 0 else { return "\t" }
+            let column = TextFormat.displayWidth(Array(linePrefix), tabstop: options.tabstop)
+            return String(repeating: " ", count: options.tabstop - column % options.tabstop)
+        case .enter:
+            return lineBreak + (options.autoindent ? TextFormat.leadingBlanks(of: linePrefix)
+                : "")
+        case .escape, .backspace, .up, .down, .left, .right, .home, .end, .pageUp, .pageDown,
+             .delete:
+            return nil
+        }
+    }
+
+    /// What the `.` register holds for typed keys: Tab and Enter as typed, not expanded.
+    private static func insertedText(_ keys: [VimKey]) -> String {
+        String(keys.compactMap { key -> Character? in
+            switch key.base {
+            case .character(let character): return character
+            case .tab: return "\t"
+            case .enter: return "\n"
+            case .escape, .backspace, .up, .down, .left, .right, .home, .end, .pageUp,
+                 .pageDown, .delete:
+                return nil
+            }
+        })
+    }
+
+    /// Escape: types the keys again for the extra copies a count asks for, sets the `^`
+    /// mark and the `.` register, records the change for `.`, and steps the cursor left as
+    /// Vim does.
     private static func finishInsert(_ result: inout VimResult, _ b: VimBuffer) {
         let session = result.window.insertSession ?? InsertSession()
         let cursor = result.window.cursor
+        let line = b.lineIndex(of: cursor)
         var stop = b.mark(at: cursor)
         var normal = b.isLineStart(cursor) ? cursor : b.previousGrapheme(before: cursor) ?? cursor
-        let copies = session.count > 1 && !session.inserted.isEmpty
-            ? String(repeating: session.repeatPrefix + session.inserted, count: session.count - 1)
-            : ""
+        let linePrefix = b.substring(b.lineStart(line)..<cursor)
+        let (copies, lastLine) = repeatedTyping(session, after: linePrefix, result.session.options,
+                                                lineBreak: b.lineBreak(near: line))
         if !copies.isEmpty {
             var range = NSRange(location: cursor, length: 0)
             if result.window.mode == .replace {
@@ -224,15 +261,14 @@ extension VimEngine {
             }
             result.edits.append(TextEdit(range: range, replacement: copies))
             let end = cursor + copies.utf16.count
-            let lastLine = copies.utf16.reversed().prefix { !Self.isLineBreak($0) }.count
-            stop = session.repeatPrefix.isEmpty
-                ? Mark(line: stop.line, column: stop.column + copies.utf16.count)
-                : Mark(line: stop.line + session.count - 1, column: lastLine)
-            normal = end - lastCharacterLength(of: copies)
+            let breaks = copies.filter(\.isNewline).count
+            stop = breaks == 0 ? Mark(line: stop.line, column: stop.column + copies.utf16.count)
+                : Mark(line: stop.line + breaks, column: lastLine.utf16.count)
+            normal = lastLine.isEmpty ? end : end - lastCharacterLength(of: copies)
         }
         result.window.marks["^"] = stop
         result.window.cursor = normal
-        result.session.registers.setReadOnly(".", session.inserted)
+        result.session.registers.setReadOnly(".", insertedText(session.typed))
         if let change = result.window.changeInProgress { result.session.lastChange = change }
         result.window.mode = .normal
         result.window.insertSession = nil
@@ -240,8 +276,31 @@ extension VimEngine {
         result.window.desiredColumn = nil
     }
 
-    private static func isLineBreak(_ unit: UInt16) -> Bool {
-        unit == 0x0A || unit == 0x0D || unit == 0x85 || unit == 0x2028 || unit == 0x2029
+    /// The text the `count - 1` extra copies add, typing the keys again from where the
+    /// session stopped, and the text of the last line they end on.
+    private static func repeatedTyping(_ session: InsertSession, after linePrefix: String,
+                                       _ options: VimOptions,
+                                       lineBreak: String) -> (String, String) {
+        guard session.count > 1, !session.typed.isEmpty else { return ("", linePrefix) }
+        var text = ""
+        var lastLine = linePrefix
+        func add(_ piece: String) {
+            text += piece
+            if let lastBreak = piece.lastIndex(where: \.isNewline) {
+                lastLine = String(piece[piece.index(after: lastBreak)...])
+            } else {
+                lastLine += piece
+            }
+        }
+        for _ in 1..<session.count {
+            add(session.repeatPrefix)
+            for key in session.typed {
+                if let typed = typedText(key, after: lastLine, options, lineBreak: lineBreak) {
+                    add(typed)
+                }
+            }
+        }
+        return (text, lastLine)
     }
 
     private static func lastCharacterLength(of text: String) -> Int {
@@ -660,7 +719,7 @@ enum TextFormat {
         return pieces
     }
 
-    private static func displayWidth<C: Collection>(_ characters: C, tabstop: Int) -> Int
+    static func displayWidth<C: Collection>(_ characters: C, tabstop: Int) -> Int
     where C.Element == Character {
         characters.reduce(0) { column, character in
             character == "\t" && tabstop > 0 ? (column / tabstop + 1) * tabstop : column + 1

@@ -77,7 +77,8 @@ enum Region: Equatable {
     /// Vim's operator region for a motion from `a` to `b`, after its rule for exclusive
     /// motions that end in the first column of a later line: the end moves back to the end
     /// of the line before, and when the start is in the indent, the region becomes lines.
-    static func between(_ a: Int, _ b: Int, _ kind: MotionKind, in buffer: VimBuffer) -> Region {
+    static func between(_ a: Int, _ b: Int, _ kind: MotionKind, keepingEnd: Bool = false,
+                        in buffer: VimBuffer) -> Region {
         let start = min(a, b)
         let end = max(a, b)
         let startLine = buffer.lineIndex(of: start)
@@ -90,7 +91,7 @@ enum Region: Equatable {
                 : end
             return .characters(NSRange(location: start, length: after - start))
         case .exclusive:
-            guard endLine > startLine, end == buffer.lineStart(endLine) else {
+            guard !keepingEnd, endLine > startLine, end == buffer.lineStart(endLine) else {
                 return .characters(NSRange(location: start, length: end - start))
             }
             if start <= buffer.firstNonBlank(line: startLine) {
@@ -172,7 +173,7 @@ extension VimEngine {
             guard let moved = motionTarget(motion, for: op, count, &result, buffer, screen)
             else { return nil }
             return OperatorSpan(region: Region.between(cursor, moved.offset, moved.kind,
-                                                       in: buffer),
+                                                       keepingEnd: moved.keepsEnd, in: buffer),
                                 start: min(cursor, moved.offset))
         }
     }
@@ -185,6 +186,7 @@ extension VimEngine {
         let cursor = result.window.cursor
         var context = motionContext(result, buffer, screen)
         context.operatorPending = true
+        context.operatorDeletes = op == .delete || op == .change
         if case .find(let find) = motion { result.session.lastFind = find }
         let outcome: Motions.Outcome
         if op == .change, case .wordForward(let big) = motion, !buffer.isLineEnd(cursor),

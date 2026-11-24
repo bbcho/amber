@@ -14,6 +14,9 @@ struct MotionTarget: Equatable {
     var desiredColumn: Int?
     /// Set when the motion ran into an end of the text but still moved.
     var shortfall: Shortfall?
+    /// Vim's `CA_NO_ADJ_OP_END`: an operator keeps an exclusive end in the first column
+    /// instead of moving it back to the previous line, as `d<BS>` deletes only a line break.
+    var keepsEnd = false
 
     init(_ offset: Int, _ kind: MotionKind, desiredColumn: Int? = nil,
          shortfall: Shortfall? = nil) {
@@ -197,6 +200,9 @@ struct MotionContext {
     /// With an operator, `w` stops at the end of the line, `l` may take the last character,
     /// and `h` and `l` that cannot move give empty text instead of failing, as in Vim.
     var operatorPending = false
+    /// The pending operator is `d` or `c`, for which Backspace at a line start stops on the
+    /// line break before it.
+    var operatorDeletes = false
 }
 
 enum Motions {
@@ -294,18 +300,23 @@ enum Motions {
                              _ context: MotionContext) -> Outcome {
         let b = context.buffer
         var offset = cursor
+        var keepsEnd = false
         for _ in 0..<count {
             let line = b.lineIndex(of: offset)
             if offset > b.lineStart(line) {
                 offset = b.previousGrapheme(before: offset) ?? offset
             } else if wrapping, line > 0 {
-                offset = normalPosition(b.contentEnd(line - 1), in: b)
+                keepsEnd = context.operatorDeletes && !b.isEmptyLine(line - 1)
+                offset = keepsEnd ? b.contentEnd(line - 1)
+                    : normalPosition(b.contentEnd(line - 1), in: b)
             } else {
                 break
             }
         }
         guard offset == cursor, !context.operatorPending else {
-            return .success(MotionTarget(offset, .exclusive))
+            var target = MotionTarget(offset, .exclusive)
+            target.keepsEnd = keepsEnd
+            return .success(target)
         }
         return .failure(MotionFailure())
     }
@@ -314,21 +325,29 @@ enum Motions {
                               _ context: MotionContext) -> Outcome {
         let b = context.buffer
         var offset = cursor
+        var kind = MotionKind.exclusive
         for _ in 0..<count {
             let line = b.lineIndex(of: offset)
             if offset < normalPosition(b.contentEnd(line), in: b) {
                 offset = b.nextGrapheme(after: offset) ?? offset
             } else if wrapping, line + 1 < b.lineCount {
-                offset = b.lineStart(line + 1)
+                if context.operatorPending && kind == .exclusive && !b.isEmptyLine(line) {
+                    kind = .inclusive
+                } else {
+                    offset = b.lineStart(line + 1)
+                    kind = .exclusive
+                }
             } else if context.operatorPending {
-                let kind: MotionKind = b.isEmptyLine(line) ? .exclusive : .inclusive
-                return .success(MotionTarget(offset, kind))
+                return .success(MotionTarget(offset, b.isEmptyLine(line) ? .exclusive
+                    : .inclusive))
             } else {
                 break
             }
         }
-        return offset == cursor ? .failure(MotionFailure()) : .success(MotionTarget(offset,
-            .exclusive))
+        guard offset == cursor, !context.operatorPending else {
+            return .success(MotionTarget(offset, kind))
+        }
+        return .failure(MotionFailure())
     }
 
     /// Vim's `cursor_down` and `cursor_up`: a count past the last or first line stops there,

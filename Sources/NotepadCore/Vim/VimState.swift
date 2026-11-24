@@ -93,10 +93,11 @@ public struct RecordedChange: Equatable {
 
 /// An Insert or Replace mode session, from the command that started it to Escape.
 public struct InsertSession: Equatable {
-    /// The text the session has inserted so far, which becomes the `.` register.
-    public var inserted = ""
-    /// How many times the text goes in: Escape adds `count - 1` more copies, as `3ix<Esc>`
-    /// inserts `xxx`.
+    /// The keys that inserted text so far. They become the `.` register, and a count types
+    /// them again.
+    public var typed: [VimKey] = []
+    /// How many times the text goes in: Escape types the keys `count - 1` more times, as
+    /// `3ix<Esc>` inserts `xxx`.
     public var count: Int
     /// What goes before each extra copy: a line break and indent after `o` and `O`.
     public var repeatPrefix: String

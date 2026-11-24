@@ -127,6 +127,31 @@ final class VimOperatorTests: XCTestCase {
         assertVim("|foo\nbar", ">h", "    |foo\nbar")
     }
 
+    func test_d_space_takes_the_last_character_before_counting_the_line_break() {
+        XCTAssertEqual(assertVim("|a\nb", "d<Space>", "|\nb").register("\""), charwise("a"))
+        assertVim("  |a", "d<Space>", " | ")
+        XCTAssertEqual(assertVim("|ab\ncd", "3d<Space>", "|cd").register("\""),
+                       linewise("ab\n"))
+        XCTAssertEqual(assertVim("|ab\ncd", "4d<Space>", "|d").register("\""),
+                       charwise("ab\nc"))
+        XCTAssertEqual(assertVim("|ab\ncd\nef", "5d<Space>", "|ef").register("\""),
+                       linewise("ab\ncd\n"))
+        XCTAssertEqual(assertVim("|ab\ncd", "y3<Space>", "|ab\ncd").register("\""),
+                       linewise("ab\n"))
+    }
+
+    func test_d_backspace_at_a_line_start_deletes_only_the_line_break() {
+        XCTAssertEqual(assertVim("ab\n|cd", "d<BS>", "ab|cd").register("\""), charwise("\n"))
+        XCTAssertEqual(assertVim("ab\n|cd", "2d<BS>", "a|cd").register("\""),
+                       charwise("b\n"))
+        assertVim("ab\n|cd", "c<BS>X<Esc>", "ab|Xcd")
+        XCTAssertEqual(assertVim("\n|cd", "d<BS>", "|cd").register("\""), linewise("\n"))
+    }
+
+    func test_y_backspace_at_a_line_start_yanks_the_last_character_before() {
+        XCTAssertEqual(assertVim("ab\n|cd", "y<BS>", "a|b\ncd").register("\""), charwise("b"))
+    }
+
     func test_dw_at_the_end_of_the_text_still_deletes_without_failing() {
         let run = assertVim("foo |bar", "d2e", "foo| ")
         XCTAssertEqual(run.effects, [])
