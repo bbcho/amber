@@ -165,8 +165,9 @@ public enum VimEngine {
             result.window.cursor = Motions.normalPosition(result.window.cursor, in: buffer)
         }
         if key == VimKey(.escape) {
+            let leavesVisual = visual && result.window.pendingKeys.isEmpty
             clearPending(&result.window)
-            if visual { endVisual(&result, buffer) }
+            if leavesVisual { endVisual(&result, buffer) }
             return
         }
         if result.window.pendingKeys.isEmpty, let digit = countDigit(key, result.window) {

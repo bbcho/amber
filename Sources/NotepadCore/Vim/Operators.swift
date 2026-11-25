@@ -103,6 +103,16 @@ enum Region: Equatable {
     }
 }
 
+/// How an operator runs beyond its text: the register, whether a delete also fills register
+/// 1, whether it is a Visual operator, which never turns a delete linewise, and how many
+/// shift widths `<` and `>` move.
+struct OperatorOptions {
+    var register: Character?
+    var registerOne = false
+    var visual = false
+    var shiftAmount = 1
+}
+
 /// A region and where its operated text starts, where the cursor goes after a yank or a
 /// case change.
 struct OperatorSpan: Equatable {
@@ -115,8 +125,7 @@ extension VimEngine {
     /// and register, recorded for `.`.
     static func operate(_ op: Operator, on target: OperatorTarget, _ command: CommandInput,
                         _ result: inout VimResult, _ buffer: VimBuffer, _ screen: ScreenGeometry) {
-        if let name = command.register, op == .delete || op == .change || op == .yank,
-           !VimRegisters.isWritable(name) && name != "\"" {
+        guard accepts(command.register, op) else {
             fail(&result)
             return
         }
@@ -126,15 +135,38 @@ extension VimEngine {
         let registerOne: Bool
         if case .motion(let motion) = target { registerOne = motion.deletesIntoRegisterOne }
         else { registerOne = false }
+        let options = OperatorOptions(register: command.register, registerOne: registerOne)
+        apply(op, to: span, options, &result, buffer)
+        record(op, command.change, &result)
+    }
+
+    /// Whether `op` can write the register `name`: `d`, `c` and `y` need a writable one.
+    static func accepts(_ name: Character?, _ op: Operator) -> Bool {
+        guard let name, op == .delete || op == .change || op == .yank else { return true }
+        return VimRegisters.isWritable(name) || name == "\""
+    }
+
+    /// Records `change` for `.`, or for a change, as the change Insert mode is completing.
+    static func record(_ op: Operator, _ change: RecordedChange, _ result: inout VimResult) {
+        if op == .change {
+            result.window.changeInProgress = change
+        } else if op.changesText {
+            result.session.lastChange = change
+        }
+    }
+
+    /// Runs `op` on `span`, the part of an operator that Visual mode shares.
+    static func apply(_ op: Operator, to span: OperatorSpan, _ options: OperatorOptions,
+                      _ result: inout VimResult, _ buffer: VimBuffer) {
+        let register = options.register
         switch op {
-        case .delete: delete(span, register: command.register, registerOne, &result, buffer)
-        case .change:
-            change(span, register: command.register, registerOne, &result, buffer)
-            result.window.changeInProgress = command.change
-            return
-        case .yank: yank(span, register: command.register, &result, buffer)
+        case .delete:
+            delete(span, register: register, options.registerOne, visual: options.visual,
+                   &result, buffer)
+        case .change: change(span, register: register, options.registerOne, &result, buffer)
+        case .yank: yank(span, register: register, &result, buffer)
         case .shiftLeft, .shiftRight:
-            shift(span, left: op == .shiftLeft, amount: 1, &result, buffer)
+            shift(span, left: op == .shiftLeft, amount: options.shiftAmount, &result, buffer)
         case .lowercase: changeCase(span, .lower, &result, buffer)
         case .uppercase: changeCase(span, .upper, &result, buffer)
         case .toggleCase: changeCase(span, .toggle, &result, buffer)
@@ -142,7 +174,6 @@ extension VimEngine {
         case .reindent: reindent(span, &result, buffer)
         case .format: format(span, &result, buffer)
         }
-        if op.changesText { result.session.lastChange = command.change }
     }
 
     /// The text `target` covers, or nil after reporting why there is none.
@@ -264,8 +295,8 @@ extension VimEngine {
         return true
     }
 
-    private static func storeDelete(_ region: Region, register: Character?, _ registerOne: Bool,
-                                    _ result: inout VimResult, _ buffer: VimBuffer) {
+    static func storeDelete(_ region: Region, register: Character?, _ registerOne: Bool,
+                            _ result: inout VimResult, _ buffer: VimBuffer) {
         let small: Bool
         switch region {
         case .characters(let range):

@@ -44,13 +44,55 @@ struct TextObjectRange: Equatable {
     var kind: MotionKind
 }
 
+/// What `current_quote` reads from a Visual selection within one line, by column.
+private struct QuoteSelection {
+    let anchor: Int
+    let cursor: Int
+    /// The selection is exactly the inside of a string.
+    let insideQuotes: Bool
+    /// The selection holds a quote.
+    let hasQuote: Bool
+
+    init(anchor: Int, cursor: Int, _ quote: UInt16, _ unit: (Int) -> UInt16) {
+        self.anchor = anchor
+        self.cursor = cursor
+        let low = min(anchor, cursor)
+        let high = max(anchor, cursor)
+        insideQuotes = anchor != cursor && low > 0 && unit(low - 1) == quote
+            && unit(high) != 0 && unit(high + 1) == quote
+        hasQuote = anchor != cursor && (low...high).contains { unit($0) == quote }
+    }
+
+    var isEmpty: Bool { anchor == cursor }
+    var cursorAfterAnchor: Bool { anchor < cursor }
+
+    /// Vim moves the selection's start to the string when it neither held a quote nor
+    /// started on or just after one.
+    func movesAnchor(_ quote: UInt16, _ unit: (Int) -> UInt16) -> Bool {
+        !hasQuote && (insideQuotes || (unit(anchor) != quote
+            && (anchor == 0 || unit(anchor - 1) != quote)))
+    }
+
+    func keepsAnchorAtQuote(_ quote: UInt16, _ unit: (Int) -> UInt16) -> Bool {
+        !hasQuote && unit(anchor) != quote && (unit(anchor) == 0 || unit(anchor + 1) != quote)
+    }
+}
+
+/// A Visual selection after a text object: Vim's `VIsual`, cursor and `VIsual_mode`.
+struct VisualObjectSelection: Equatable {
+    var anchor: Int
+    var cursor: Int
+    var mode: VimMode
+}
+
 /// Ports of Vim's `current_word`, `current_sent`, `current_par`, `current_quote` and
-/// `current_block`, for an operator outside Visual mode.
+/// `current_block`, for an operator and in Visual mode.
 enum TextObjects {
     static func find(_ object: TextObject, count: Int, from cursor: Int,
                      in b: VimBuffer) -> TextObjectRange? {
         switch object {
-        case .word(let inner, let big): return word(cursor, count, include: !inner, big: big, b)
+        case .word(let inner, let big):
+            return word(cursor, count, include: !inner, big: big, anchor: nil, b)
         case .sentence(let inner): return sentence(cursor, count, include: !inner, b)
         case .paragraph(let inner): return paragraph(cursor, count, include: !inner, b)
         case .quote(let quote, let inner):
@@ -60,32 +102,61 @@ enum TextObjects {
         }
     }
 
+    /// The selection after a text object typed in Visual mode, which selects the object
+    /// when the selection is one character and otherwise extends it, or nil when Vim fails.
+    static func findVisual(_ object: TextObject, count: Int, anchor: Int, cursor: Int,
+                           mode: VimMode, in b: VimBuffer) -> VisualObjectSelection? {
+        let charwise: VimMode = mode == .visualLine ? .visual : mode
+        switch object {
+        case .word(let inner, let big):
+            return word(cursor, count, include: !inner, big: big, anchor: anchor, b).map {
+                VisualObjectSelection(anchor: $0.start, cursor: $0.end, mode: charwise)
+            }
+        case .sentence(let inner):
+            return visualSentence(anchor, cursor, count, include: !inner, mode, b)
+        case .paragraph(let inner):
+            return visualParagraph(anchor, cursor, count, include: !inner, mode, b)
+        case .quote(let quote, let inner):
+            return visualQuote(quote, anchor, cursor, count, include: !inner, b).map {
+                VisualObjectSelection(anchor: $0.anchor, cursor: $0.cursor, mode: charwise)
+            }
+        case .block(let open, let close, let inner):
+            return visualBlock(open, close, anchor, cursor, count, include: !inner, b)
+        }
+    }
+
     // MARK: Words
 
+    /// With an `anchor`, Visual mode: a selection of one character selects the word, and a
+    /// longer one grows by `count` words at the cursor's end.
     private static func word(_ cursor: Int, _ count: Int, include: Bool, big: Bool,
-                             _ b: VimBuffer) -> TextObjectRange? {
-        var start = backInLine(cursor, big, b)
-        var p = start
+                             anchor: Int?, _ b: VimBuffer) -> TextObjectRange? {
+        var start = anchor ?? cursor
+        var p = cursor
+        var remaining = count
         var inclusive = true
         var includeWhite = false
-        if (b.wordClass(p, big) == .blank) == include {
-            guard Motions.endWord(&p, 1, big: big, stop: true, empty: true, b) else { return nil }
-        } else {
-            _ = Motions.fwdWord(&p, 1, big: big, eol: true, b)
-            if b.isLineStart(p) { _ = b.decl(&p) } else { _ = oneLeft(&p, b) }
-            includeWhite = include
-        }
-        for remaining in stride(from: count - 1, to: 0, by: -1) {
-            inclusive = true
-            guard b.incl(&p) != -1 else { return nil }
-            if include != (b.wordClass(p, big) == .blank) {
-                if !Motions.fwdWord(&p, 1, big: big, eol: true, b) && remaining > 1 { return nil }
-                if !oneLeft(&p, b) { inclusive = false }
-            } else {
+        if anchor == nil || anchor == cursor {
+            start = backInLine(cursor, big, b)
+            p = start
+            if (b.wordClass(p, big) == .blank) == include {
                 guard Motions.endWord(&p, 1, big: big, stop: true, empty: true, b) else {
                     return nil
                 }
+            } else {
+                _ = Motions.fwdWord(&p, 1, big: big, eol: true, b)
+                if b.isLineStart(p) { _ = b.decl(&p) } else { _ = oneLeft(&p, b) }
+                includeWhite = include
             }
+            remaining -= 1
+        }
+        while remaining > 0 {
+            inclusive = true
+            let grown = anchor != nil && p < start
+                ? wordBackward(&p, include: include, big: big, b)
+                : wordForward(&p, include: include, big: big, last: remaining == 1, &inclusive, b)
+            guard grown else { return nil }
+            remaining -= 1
         }
         if includeWhite && (b.wordClass(p, big) != .blank || (b.isLineStart(p) && !inclusive)) {
             var before = start
@@ -95,6 +166,30 @@ enum TextObjects {
             }
         }
         return TextObjectRange(start: start, end: p, kind: inclusive ? .inclusive : .exclusive)
+    }
+
+    /// One more word or run of blanks after `p`. False when Vim's `current_word` fails.
+    private static func wordForward(_ p: inout Int, include: Bool, big: Bool, last: Bool,
+                                    _ inclusive: inout Bool, _ b: VimBuffer) -> Bool {
+        guard b.incl(&p) != -1 else { return false }
+        guard include != (b.wordClass(p, big) == .blank) else {
+            return Motions.endWord(&p, 1, big: big, stop: true, empty: true, b)
+        }
+        if !Motions.fwdWord(&p, 1, big: big, eol: true, b) && !last { return false }
+        if !oneLeft(&p, b) { inclusive = false }
+        return true
+    }
+
+    /// One more word or run of blanks before `p`, when the cursor is at the selection's start.
+    private static func wordBackward(_ p: inout Int, include: Bool, big: Bool,
+                                     _ b: VimBuffer) -> Bool {
+        guard b.decl(&p) != -1 else { return false }
+        if include != (b.wordClass(p, big) != .blank) {
+            return Motions.backWord(&p, 1, big: big, stop: true, b)
+        }
+        guard Motions.backWordEnd(&p, 1, big: big, eol: true, b) else { return false }
+        _ = b.incl(&p)
+        return true
     }
 
     /// Vim's `back_in_line`: the start of the word or run of blanks under `offset`.
@@ -221,10 +316,7 @@ enum TextObjects {
     /// Within the cursor's line only, as in Vim. A quote after a backslash does not count.
     private static func quote(_ quote: UInt16, _ cursor: Int, _ count: Int, include: Bool,
                               _ b: VimBuffer) -> TextObjectRange? {
-        let lineStart = b.lineStart(b.lineIndex(of: cursor))
-        let length = b.contentEnd(b.lineIndex(of: cursor)) - lineStart
-        let unit: (Int) -> UInt16 = { $0 >= 0 && $0 < length ? b.text.character(at: lineStart + $0)
-            : 0 }
+        let (lineStart, unit) = lineUnits(cursor, b)
         let cursorColumn = cursor - lineStart
         var start: Int
         var end: Int
@@ -257,6 +349,14 @@ enum TextObjects {
         if !include && count < 2 { start += 1 }
         let kind: MotionKind = include || count > 1 ? .inclusive : .exclusive
         return TextObjectRange(start: lineStart + start, end: lineStart + end, kind: kind)
+    }
+
+    /// The start of `offset`'s line and its UTF-16 units by column, 0 past its end as
+    /// Vim's NUL.
+    private static func lineUnits(_ offset: Int, _ b: VimBuffer) -> (Int, (Int) -> UInt16) {
+        let lineStart = b.lineStart(b.lineIndex(of: offset))
+        let length = b.contentEnd(b.lineIndex(of: offset)) - lineStart
+        return (lineStart, { $0 >= 0 && $0 < length ? b.text.character(at: lineStart + $0) : 0 })
     }
 
     /// Vim's `find_next_quote`: the column of the next quote, or -1.
@@ -307,16 +407,7 @@ enum TextObjects {
             }
         }
         if pos < b.length && b.text.character(at: pos) == open { pos += 1 }
-        var start: Int?
-        let enclosing = unmatched(open, from: pos, opening: open, closing: close, b) != nil
-        for _ in 0..<count {
-            let found = enclosing
-                ? unmatched(open, from: start ?? pos, opening: open, closing: close, b)
-                : nextOpening(from: start ?? pos, open, close, b)
-            guard let found else { return nil }
-            start = found
-        }
-        guard var begin = start,
+        guard var begin = openingBracket(open, close, from: pos, count, b),
               var end = unmatched(close, from: begin, opening: open, closing: close, b)
         else { return nil }
         var startOfLine = false
@@ -335,6 +426,22 @@ enum TextObjects {
         }
         if begin <= end { return TextObjectRange(start: begin, end: end, kind: .inclusive) }
         return TextObjectRange(start: begin, end: begin, kind: .exclusive)
+    }
+
+    /// The `count`th unmatched `open` before `pos`, or when `pos` is in no block, the
+    /// `count`th one after it.
+    private static func openingBracket(_ open: UInt16, _ close: UInt16, from pos: Int,
+                                       _ count: Int, _ b: VimBuffer) -> Int? {
+        var start: Int?
+        let enclosing = unmatched(open, from: pos, opening: open, closing: close, b) != nil
+        for _ in 0..<count {
+            let found = enclosing
+                ? unmatched(open, from: start ?? pos, opening: open, closing: close, b)
+                : nextOpening(from: start ?? pos, open, close, b)
+            guard let found else { return nil }
+            start = found
+        }
+        return start
     }
 
     /// Vim's `inindent`: only blanks come before `pos` on its line, and `extra` more.
@@ -396,5 +503,242 @@ enum TextObjects {
             backslashes += 1
         }
         return backslashes % 2 == 1
+    }
+
+    // MARK: Visual mode
+
+    /// `current_sent` in Visual mode. A selection of one character selects sentences from
+    /// the cursor; a longer one grows at the cursor's end (Vim's `extend` label).
+    private static func visualSentence(_ anchor: Int, _ cursor: Int, _ count: Int,
+                                       include: Bool, _ mode: VimMode,
+                                       _ b: VimBuffer) -> VisualObjectSelection? {
+        guard anchor == cursor else {
+            let next = Motions.findSentence(forward: true, 1, from: cursor, b) ?? cursor
+            return extendSentences(cursor, next, anchor, count, include: include, mode, b)
+        }
+        guard let found = sentence(cursor, count, include: include, b) else { return nil }
+        var end = found.end
+        if found.kind == .exclusive { _ = b.decl(&end) }
+        guard found.start != end else {
+            return extendSentences(found.start, end, anchor, count, include: include, mode, b)
+        }
+        return VisualObjectSelection(anchor: found.start, cursor: end, mode: .visual)
+    }
+
+    private static func extendSentences(_ start: Int, _ current: Int, _ anchor: Int,
+                                        _ count: Int, include: Bool, _ mode: VimMode,
+                                        _ b: VimBuffer) -> VisualObjectSelection {
+        let back: (Int) -> Int = { Motions.findSentence(forward: false, 1, from: $0, b) ?? $0 }
+        var cursor = current
+        var pos = start
+        var atStart: Bool
+        if start < anchor {
+            atStart = onlyBlanks(from: &pos, before: cursor, b)
+            if !atStart {
+                cursor = back(cursor)
+                if cursor == start {
+                    atStart = true
+                } else {
+                    cursor = Motions.findSentence(forward: true, 1, from: cursor, b) ?? cursor
+                }
+            }
+            for _ in 0..<(include ? count * 2 : count) {
+                if atStart { firstBlank(&cursor, b) }
+                if !atStart || (!include && !isWhite(b.unit(at: cursor))) { cursor = back(cursor) }
+                atStart.toggle()
+            }
+        } else {
+            _ = b.incl(&pos)
+            atStart = true
+            if pos != cursor {
+                atStart = !onlyBlanks(from: &pos, before: cursor, b)
+                cursor = atStart ? back(cursor) : start
+            }
+            forwardSentences(&cursor, include ? count * 2 : count, atStart: atStart, b)
+        }
+        return VisualObjectSelection(anchor: anchor, cursor: cursor, mode: mode)
+    }
+
+    /// Whether only blanks lie from `pos` up to `end`, moving `pos` past them.
+    private static func onlyBlanks(from pos: inout Int, before end: Int, _ b: VimBuffer) -> Bool {
+        while pos < end {
+            if !isWhite(b.unit(at: pos)) { return false }
+            if b.incl(&pos) == -1 { break }
+        }
+        return true
+    }
+
+    /// `current_par` in Visual mode: a selection within one line selects paragraphs as lines;
+    /// a longer one grows by paragraphs at the cursor's end.
+    private static func visualParagraph(_ anchor: Int, _ cursor: Int, _ count: Int,
+                                        include: Bool, _ mode: VimMode,
+                                        _ b: VimBuffer) -> VisualObjectSelection? {
+        let anchorLine = b.lineIndex(of: anchor)
+        var line = b.lineIndex(of: cursor)
+        if anchorLine == line {
+            guard let found = paragraph(cursor, count, include: include, b) else { return nil }
+            let first = b.lineIndex(of: found.start)
+            if mode != .visualLine || first != line {
+                return VisualObjectSelection(anchor: anchorLine == first ? anchor : found.start,
+                                             cursor: found.end, mode: .visualLine)
+            }
+            line = first
+        }
+        let direction = line < anchorLine ? -1 : 1
+        let edge = direction < 0 ? 0 : b.lineCount - 1
+        for _ in 0..<count {
+            guard line != edge else { return nil }
+            line = nextParagraphEdge(from: line, direction, edge: edge, include: include, b)
+        }
+        return VisualObjectSelection(anchor: anchor, cursor: b.lineStart(line), mode: mode)
+    }
+
+    /// One paragraph or run of blank lines past `line`, and with `include` the run after it.
+    private static func nextParagraphEdge(from line: Int, _ direction: Int, edge: Int,
+                                          include: Bool, _ b: VimBuffer) -> Int {
+        var line = line
+        var previousBlank: Bool?
+        for _ in 0..<2 {
+            line += direction
+            let blank = b.isBlankLine(line)
+            if previousBlank == blank { return line - direction }
+            while line != edge, b.isBlankLine(line + direction) == blank,
+                  blank || !b.startsParagraph(line + (direction > 0 ? 1 : 0)) {
+                line += direction
+            }
+            if !include || line == edge { break }
+            previousBlank = blank
+        }
+        return line
+    }
+
+    /// `current_block` in Visual mode. When `i(` would not grow the selection, it takes the
+    /// block around it instead. A block whose end is alone on its line takes the line break.
+    private static func visualBlock(_ open: UInt16, _ close: UInt16, _ anchor: Int,
+                                    _ cursor: Int, _ count: Int, include: Bool,
+                                    _ b: VimBuffer) -> VisualObjectSelection? {
+        var oldStart = cursor
+        var oldEnd = cursor
+        var pos = cursor
+        if anchor == cursor {
+            if open == 0x7B {
+                while inIndent(pos, extra: 1, b) {
+                    if b.inc(&pos) != 0 { break }
+                }
+            }
+            if pos < b.length && b.text.character(at: pos) == open { pos += 1 }
+        } else if anchor < cursor {
+            oldStart = anchor
+            pos = anchor
+        } else {
+            oldEnd = anchor
+        }
+        guard var begin = openingBracket(open, close, from: pos, count, b),
+              var end = unmatched(close, from: begin, opening: open, closing: close, b)
+        else { return nil }
+        var startOfLine = false
+        while !include {
+            _ = b.incl(&begin)
+            startOfLine = b.isLineStart(end)
+            _ = b.decl(&end)
+            while inIndent(end, extra: 1, b) {
+                startOfLine = true
+                if b.decl(&end) != 0 { break }
+            }
+            guard begin >= oldStart, oldEnd >= end, begin != end else { break }
+            var before = oldStart
+            _ = b.decl(&before)
+            guard let outer = unmatched(open, from: before, opening: open, closing: close, b),
+                  let outerEnd = unmatched(close, from: outer, opening: open, closing: close, b)
+            else { return nil }
+            (begin, end) = (outer, outerEnd)
+        }
+        if startOfLine && !b.isLineEnd(end) { _ = b.inc(&end) }
+        return VisualObjectSelection(anchor: begin, cursor: end, mode: .visual)
+    }
+
+    /// `current_quote` in Visual mode, within the cursor's line. Typed again on a selection
+    /// that spans a string's inside, `i"` takes the quotes and `a"` the next string.
+    private static func visualQuote(_ quote: UInt16, _ anchor: Int, _ cursor: Int,
+                                    _ count: Int, include: Bool,
+                                    _ b: VimBuffer) -> (anchor: Int, cursor: Int)? {
+        guard b.lineIndex(of: anchor) == b.lineIndex(of: cursor) else { return nil }
+        let (lineStart, unit) = lineUnits(cursor, b)
+        let cursorColumn = cursor - lineStart
+        let anchorColumn = anchor - lineStart
+        let selection = QuoteSelection(anchor: anchorColumn, cursor: cursorColumn, quote, unit)
+        guard var (start, end) = quoteColumns(selection, quote, unit) else { return nil }
+        if include {
+            if isWhite(unit(end + 1)) {
+                while isWhite(unit(end + 1)) { end += 1 }
+            } else {
+                while start > 0 && isWhite(unit(start - 1)) { start -= 1 }
+            }
+        }
+        if !include && count < 2 && (selection.isEmpty || !selection.insideQuotes) { start += 1 }
+        let keepsEnd = include || count > 1 || (!selection.isEmpty && selection.insideQuotes)
+        let last = keepsEnd ? end : end - 1
+        var newAnchor = anchorColumn
+        var newCursor = last
+        if selection.isEmpty || selection.cursorAfterAnchor {
+            if selection.isEmpty || selection.movesAnchor(quote, unit) { newAnchor = start }
+        } else {
+            if selection.insideQuotes || selection.keepsAnchorAtQuote(quote, unit) {
+                newAnchor = last
+            }
+            newCursor = start
+        }
+        return (lineStart + newAnchor, lineStart + newCursor)
+    }
+
+    /// The quotes around the string `visualQuote` selects: the next or previous string when
+    /// the selection already ends on a quote, otherwise the string around it.
+    private static func quoteColumns(_ selection: QuoteSelection, _ quote: UInt16,
+                                     _ unit: (Int) -> UInt16) -> (Int, Int)? {
+        let column = selection.cursor
+        if !selection.isEmpty && unit(column) == quote {
+            return selection.cursorAfterAnchor ? nextString(after: column, quote, unit)
+                : previousString(before: column, quote, unit)
+        }
+        guard unit(column) == quote || !selection.isEmpty else {
+            var start = previousQuote(unit, from: column, quote)
+            if unit(start) != quote {
+                start = nextQuote(unit, from: start, quote, escaped: false)
+                guard start >= 0 else { return nil }
+            }
+            let end = nextQuote(unit, from: start + 1, quote, escaped: true)
+            return end >= 0 ? (start, end) : nil
+        }
+        var first = column
+        if !selection.isEmpty {
+            first = selection.cursorAfterAnchor
+                ? nextQuote(unit, from: column, quote, escaped: false)
+                : previousQuote(unit, from: column, quote)
+        }
+        var start = 0
+        while true {
+            start = nextQuote(unit, from: start, quote, escaped: false)
+            guard start >= 0, start <= first else { return nil }
+            let end = nextQuote(unit, from: start + 1, quote, escaped: true)
+            guard end >= 0 else { return nil }
+            if first <= end { return (start, end) }
+            start = end + 1
+        }
+    }
+
+    private static func nextString(after column: Int, _ quote: UInt16,
+                                   _ unit: (Int) -> UInt16) -> (Int, Int)? {
+        let start = nextQuote(unit, from: column + 1, quote, escaped: false)
+        guard start >= 0 else { return nil }
+        let end = nextQuote(unit, from: start + 1, quote, escaped: true)
+        return end < 0 ? (column, start) : (start, end)
+    }
+
+    private static func previousString(before column: Int, _ quote: UInt16,
+                                       _ unit: (Int) -> UInt16) -> (Int, Int)? {
+        let end = previousQuote(unit, from: column, quote)
+        guard unit(end) == quote else { return nil }
+        let start = previousQuote(unit, from: end, quote)
+        return unit(start) == quote ? (start, end) : (end, column)
     }
 }

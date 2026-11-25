@@ -352,6 +352,161 @@ final class VimVisualTests: XCTestCase {
         assertVim("|ab\r\ncd\r\nxyz\r\n", "<C-v>jlyGp", "ab\r\ncd\r\nx|abyz\r\n cd\r\n")
     }
 
+    // MARK: Escape with a pending key
+
+    func test_escape_cancels_a_pending_key_and_keeps_the_selection() {
+        for keys in ["vlr<Esc>x", "vl\"<Esc>x", "vlg<Esc>x", "vlf<Esc>x", "vlm<Esc>x",
+                     "vli<Esc>x"] {
+            assertVim("|abcdef", keys, "|cdef")
+        }
+    }
+
+    func test_escape_after_a_count_or_a_register_leaves_visual_mode() {
+        assertVim("|abcdef", "vl2<Esc>x", "a|cdef")
+        assertVim("|abcdef", "vl\"a<Esc>x", "a|cdef")
+        assertVim("|abcdef", "vl<Esc>x", "a|cdef")
+    }
+
+    // MARK: Text objects
+
+    /// Vim 9.1's selection after each text object, typed once or again to extend it.
+    private static let textObjectCases: [(before: String, keys: String, after: String)] = [
+        ("foo b|ar baz qux", "viw", "foo [ba|r] baz qux"),
+        ("foo b|ar baz qux", "viwiw", "foo [bar| ]baz qux"),
+        ("foo b|ar baz qux", "viwiwiw", "foo [bar ba|z] qux"),
+        ("foo b|ar baz qux", "vaw", "foo [bar| ]baz qux"),
+        ("foo b|ar baz qux", "vawaw", "foo [bar baz| ]qux"),
+        ("foo b|ar baz qux", "v2iw", "foo [bar| ]baz qux"),
+        ("foo b|ar baz qux", "v3aw", "foo[ bar baz qu|x]"),
+        ("foo bar b|az qux", "vhiw", "foo bar[| ba]z qux"),
+        ("foo bar b|az qux", "vhaw", "foo [|bar ba]z qux"),
+        ("foo bar b|az qux", "vhiwiw", "foo [|bar ba]z qux"),
+        ("foo b|ar baz qux", "Viw", "foo [ba|r] baz qux"),
+        ("foo b|ar baz qux", "vliw", "foo b[ar| ]baz qux"),
+        ("foo bar b|az", "vaw", "foo bar[ ba|z]"),
+        ("One. Tw|o three. Four five. Six.", "vis", "One. [Two three|.] Four five. Six."),
+        ("One. Tw|o three. Four five. Six.", "visis", "One. [Two three.| ]Four five. Six."),
+        ("One. Tw|o three. Four five. Six.", "vas", "One. [Two three.| ]Four five. Six."),
+        ("One. Tw|o three. Four five. Six.", "vasas", "One. [Two three. Four five.| ]Six."),
+        ("One. Two three. Fo|ur five. Six.", "vhis", "One. Two three. [|Fou]r five. Six."),
+        ("One. Two three. Fo|ur five. Six.", "vhas", "One. Two three.[| Fou]r five. Six."),
+        ("a\n|b\nc\n\nd\ne\n\nf", "vip", "[a\nb\n|c\n]\nd\ne\n\nf"),
+        ("a\n|b\nc\n\nd\ne\n\nf", "vipip", "[a\nb\nc\n|\n]d\ne\n\nf"),
+        ("a\n|b\nc\n\nd\ne\n\nf", "vap", "[a\nb\nc\n|\n]d\ne\n\nf"),
+        ("a\n|b\nc\n\nd\ne\n\nf", "vapap", "[a\nb\nc\n\nd\ne\n|\n]f"),
+        ("a\n|b\nc\n\nd\ne\n\nf", "v2ap", "[a\nb\nc\n\nd\ne\n|\n]f"),
+        ("a\n|b\nc\n\nd\ne\n\nf", "Vip", "[a\nb\n|c\n]\nd\ne\n\nf"),
+        ("a\nb\nc\n\nd\n|e\n\nf", "vkip", "a\nb\nc\n[|\nd\ne]\n\nf"),
+        ("a\nb\nc\n\nd\n|e\n\nf", "vkkip", "[|a\nb\nc\n\nd\ne]\n\nf"),
+        ("f(a, (b|c), d)", "vi(", "f(a, ([b|c]), d)"),
+        ("f(a, (b|c), d)", "vi(i(", "f([a, (bc), |d])"),
+        ("f(a, (b|c), d)", "va(", "f(a, [(bc|)], d)"),
+        ("f(a, (b|c), d)", "va(a(", "f[(a, (bc), d|)]"),
+        ("f(a, (b|c), d)", "v2i(", "f([a, (bc), |d])"),
+        ("f(a, (|bc), d)", "vli(", "f([a, (bc), |d])"),
+        ("f(a, (bc|), d)", "vhi(", "f(a, ([b|c]), d)"),
+        ("f(a, (b|c), d)", "vib", "f(a, ([b|c]), d)"),
+        ("f(a, (b|c), d)", "vi)a(", "f(a, [(bc|)], d)"),
+        ("x = {\n  |a\n}", "vi{", "x = {\n[  a|\n]}"),
+        ("x = {\n  |a\n}", "va{", "x = [{\n  a\n|}]"),
+        ("a \"b|cd\" e \"f\" g", "vi\"", "a \"[bc|d]\" e \"f\" g"),
+        ("a \"b|cd\" e \"f\" g", "vi\"i\"", "a [\"bcd|\"] e \"f\" g"),
+        ("a \"b|cd\" e \"f\" g", "va\"", "a [\"bcd\"| ]e \"f\" g"),
+        ("a \"b|cd\" e \"f\" g", "va\"a\"", "a [\"bcd\" e \"f\"| ]g"),
+        ("a \"b|cd\" e \"f\" g", "v2i\"", "a [\"bcd|\"] e \"f\" g"),
+        ("a \"b|cd\" e \"f\" g", "vla\"", "a [\"bcd\"| ]e \"f\" g"),
+        ("a \"b|cd\" e \"f\" g", "vi\"a\"", "a [\"bcd\"| ]e \"f\" g"),
+        ("a \"|bcd\" e \"f\" g", "vlli\"", "a [\"bcd|\"] e \"f\" g"),
+        ("a \"bc|d\" e \"f\" g", "vhhi\"", "a [|\"bcd\"] e \"f\" g"),
+    ]
+
+    func test_text_objects_select_and_extend_the_visual_selection_as_vim_does() {
+        for (before, keys, after) in Self.textObjectCases {
+            let run = assertVim(before, keys, after)
+            XCTAssertEqual(run.effects, [], keys)
+        }
+    }
+
+    func test_a_paragraph_object_makes_the_selection_linewise_and_a_word_charwise() {
+        XCTAssertEqual(runVim("a\n|b\nc\n\nd", "vip").window.mode, .visualLine)
+        XCTAssertEqual(runVim("foo b|ar", "Viw").window.mode, .visual)
+        XCTAssertEqual(runVim("f(|a)", "<C-v>i(").window.mode, .visual)
+    }
+
+    func test_a_text_object_that_finds_nothing_beeps_and_keeps_the_selection() {
+        let empty = assertVim("x = (|) y", "vi(", "x = ([|)] y")
+        XCTAssertEqual(empty.effects, [.failure])
+        let outer = assertVim("x = {\n  |a\n}", "vi{i{", "x = {\n[  a|\n]}")
+        XCTAssertEqual(outer.effects, [.failure])
+    }
+
+    // MARK: Putting over a selection
+
+    func test_p_replaces_the_selection_and_puts_the_replaced_text_in_the_unnamed_register() {
+        let run = assertVim("|abc def", "yiwwvlp", "abc ab|cf")
+        XCTAssertEqual(run.register("\""), charwise("de"))
+        XCTAssertEqual(run.register("-"), charwise("de"))
+        assertVim("|abc def", "yiwwvl2p", "abc abcab|cf")
+    }
+
+    func test_P_replaces_the_selection_and_keeps_the_registers() {
+        let run = assertVim("|abc def", "yiwwvlP", "abc ab|cf")
+        XCTAssertEqual(run.register("\""), charwise("abc"))
+        XCTAssertNil(run.register("-"))
+        let lines = assertVim("|XY\nabcdef\n123", "yyjVjP", "XY\n|XY")
+        XCTAssertEqual(lines.register("\""), linewise("XY\n"))
+    }
+
+    func test_putting_lines_over_a_charwise_selection_splits_the_line() {
+        assertVim("|XY\nabcdef", "yyj$hvlp", "XY\nabcd\n|XY\n")
+        assertVim("|XY\nab\ncdef", "yyjlvjp", "XY\na\n|XY\nef")
+        assertVim("|XY\nabcdef\n123", "yyjv$p", "XY\n\n|XY\n123")
+        assertVim("|XY\r\nab\r\ncdef", "yyjlvjp", "XY\r\na\r\n|XY\r\nef")
+    }
+
+    func test_putting_over_a_linewise_selection_replaces_the_lines() {
+        let run = assertVim("|XY\nabcdef\n123", "yyjVp", "XY\n|XY\n123")
+        XCTAssertEqual(run.register("\""), linewise("abcdef\n"))
+        assertVim("|XY\nabcdef\n123", "ylj0Vp", "XY\n|X\n123")
+        assertVim("|ab\ncd\nwxyz\n1234", "<C-v>jlyjj0lVp", "ab\ncd\n|ab\ncd\n1234")
+        assertVim("ab\r\n|cd\r\nef", "yyjVp", "ab\r\ncd\r\n|cd")
+    }
+
+    func test_putting_characters_over_a_multiline_charwise_selection() {
+        assertVim("|XY\nabcdef\n123", "ylj0lvjp", "XY\na|X3")
+    }
+
+    func test_putting_one_line_of_characters_over_a_block_repeats_it_on_every_line() {
+        assertVim("|XY\nabcdef\n123456", "y$j0l<C-v>jlp", "XY\naX|Ydef\n1XY456")
+        assertVim("|XY\nabcdef\n123", "y$j0l<C-v>jlp", "XY\naX|Ydef\n1XY")
+    }
+
+    func test_putting_lines_over_a_block_puts_them_below_or_above_it() {
+        assertVim("|XY\nabcdef\n123456", "yyj0l<C-v>jlp", "XY\nadef\n1456\n|XY")
+        assertVim("|XY\nabcdef\n123456", "yyj0l<C-v>jlP", "XY\n|XY\nadef\n1456")
+    }
+
+    func test_putting_a_block_over_a_selection_puts_it_where_the_selection_started() {
+        assertVim("|ab\ncd\nwxyz\n1234", "<C-v>jlyjj0l<C-v>jlp", "ab\ncd\nw|abz\n1cd4")
+        assertVim("|ab\ncd\nwxyz\n1234", "<C-v>jlyjj0l<C-v>lp", "ab\ncd\nw|abz\n1cd234")
+        assertVim("|ab\ncd\nwxyz\n1234", "<C-v>jlyjj0lvlp", "ab\ncd\nw|abz\n1cd234")
+    }
+
+    func test_putting_several_lines_of_characters_over_a_block() {
+        assertVim("|X\nY\nabcdef\n123456", "vjyjj0l<C-v>jlp", "X\nY\na|X\nYdef\n1456")
+    }
+
+    func test_gv_after_a_visual_put_selects_the_put_text() {
+        assertVim("|abc def", "yiwwvlpgvd", "abc |f")
+        assertVim("|abc def\nxy", "yiwwvjpgvd", "abc| ")
+    }
+
+    func test_a_visual_put_from_an_empty_register_deletes_the_selection_and_fails() {
+        let run = assertVim("ab|cdef\n123", "vlp", "ab|ef\n123")
+        XCTAssertEqual(run.effects, [.message("E353: Nothing in register \""), .failure])
+        XCTAssertEqual(run.register("\""), charwise("cd"))
+    }
+
     // MARK: Repeating
 
     func test_dot_repeats_a_charwise_change_over_the_same_number_of_characters() {

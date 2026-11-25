@@ -464,9 +464,22 @@ enum Motions {
     private static func wordBackward(_ start: Int, _ count: Int, big: Bool,
                                      _ b: VimBuffer) -> Outcome {
         var p = start
+        let ok = backWord(&p, count, big: big, stop: false, b)
+        return .success(MotionTarget(p, .exclusive, shortfall: ok ? nil : .cancelOperator))
+    }
+
+    /// Vim's `bck_word`. With `stop`, a cursor that starts at the start of a word and moves
+    /// onto another class stays after it. False when it started at the start of the text.
+    static func backWord(_ p: inout Int, _ count: Int, big: Bool, stop: Bool,
+                         _ b: VimBuffer) -> Bool {
+        var stop = stop
         for _ in 0..<count {
-            if b.dec(&p) == -1 {
-                return .success(MotionTarget(p, .exclusive, shortfall: .cancelOperator))
+            let startClass = b.wordClass(p, big)
+            if b.dec(&p) == -1 { return false }
+            defer { stop = false }
+            guard !stop || startClass == b.wordClass(p, big) || startClass == .blank else {
+                _ = b.inc(&p)
+                continue
             }
             var onEmptyLine = false
             while b.wordClass(p, big) == .blank {
@@ -474,16 +487,14 @@ enum Motions {
                     onEmptyLine = true
                     break
                 }
-                if b.dec(&p) == -1 { return .success(MotionTarget(p, .exclusive)) }
+                if b.dec(&p) == -1 { return true }
             }
             if !onEmptyLine {
-                if b.skip(b.wordClass(p, big), forward: false, big, &p) {
-                    return .success(MotionTarget(p, .exclusive))
-                }
+                if b.skip(b.wordClass(p, big), forward: false, big, &p) { return true }
                 _ = b.inc(&p)
             }
         }
-        return .success(MotionTarget(p, .exclusive))
+        return true
     }
 
     /// `e`, or with `stop`, the target `cw` uses: a cursor already on the end of a word
@@ -530,22 +541,33 @@ enum Motions {
     private static func wordEndBackward(_ start: Int, _ count: Int, big: Bool,
                                         _ b: VimBuffer) -> Outcome {
         var p = start
+        let ok = backWordEnd(&p, count, big: big, eol: false, b)
+        return .success(MotionTarget(p, .inclusive, shortfall: ok ? nil : .cancelOperator))
+    }
+
+    /// Vim's `bckend_word`. With `eol`, it stops on reaching the end of an earlier line.
+    /// False when it started at the start of the text.
+    static func backWordEnd(_ p: inout Int, _ count: Int, big: Bool, eol: Bool,
+                            _ b: VimBuffer) -> Bool {
         for _ in 0..<count {
             let startClass = b.wordClass(p, big)
-            if b.dec(&p) == -1 {
-                return .success(MotionTarget(p, .inclusive, shortfall: .cancelOperator))
-            }
+            let first = b.dec(&p)
+            if first == -1 { return false }
+            if eol && first == 1 { return true }
+            var moved = 0
             if startClass != .blank {
                 while b.wordClass(p, big) == startClass {
-                    if b.dec(&p) == -1 { return .success(MotionTarget(p, .inclusive)) }
+                    moved = b.dec(&p)
+                    if moved == -1 || (eol && moved == 1) { return true }
                 }
             }
             while b.wordClass(p, big) == .blank {
                 if b.isEmptyLineStart(p) { break }
-                if b.dec(&p) == -1 { return .success(MotionTarget(p, .inclusive)) }
+                moved = b.dec(&p)
+                if moved == -1 || (eol && moved == 1) { return true }
             }
         }
-        return .success(MotionTarget(p, .inclusive))
+        return true
     }
 
     // MARK: Finding a character
