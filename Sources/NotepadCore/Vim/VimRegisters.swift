@@ -98,6 +98,22 @@ public struct VimRegisters: Equatable {
         stored[name] = RegisterValue(text: text, kind: .characterwise)
     }
 
+    /// Stores a recorded macro in `name` without touching the unnamed register. An
+    /// uppercase name appends to the register's last line, so a linewise register stays
+    /// linewise, as Vim's `stuff_yank` does.
+    public mutating func storeMacro(_ text: String, in name: Character) {
+        let key = Character(name.lowercased())
+        guard name.isUppercase, let old = stored[key] else {
+            stored[key] = RegisterValue(text: text, kind: .characterwise)
+            return
+        }
+        guard old.kind == .linewise, old.text.hasSuffix("\n") else {
+            stored[key] = RegisterValue(text: old.text + text, kind: old.kind)
+            return
+        }
+        stored[key] = RegisterValue(text: old.text.dropLast() + text + "\n", kind: .linewise)
+    }
+
     private static func target(_ name: Character?) -> Character? {
         guard let name, name != "\"" else { return nil }
         return name

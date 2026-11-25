@@ -17,6 +17,8 @@ struct MotionTarget: Equatable {
     /// Vim's `CA_NO_ADJ_OP_END`: an operator keeps an exclusive end in the first column
     /// instead of moving it back to the previous line, as `d<BS>` deletes only a line break.
     var keepsEnd = false
+    /// A message Vim shows although the motion worked, such as a search that wrapped.
+    var warning: String?
 
     init(_ offset: Int, _ kind: MotionKind, desiredColumn: Int? = nil,
          shortfall: Shortfall? = nil) {
@@ -61,13 +63,14 @@ enum Motion: Equatable {
     case screenTop, screenMiddle, screenBottom
     /// `` `x `` when `exact`, otherwise `'x`.
     case mark(Character, exact: Bool)
+    case search(SearchMotion)
 
     /// Whether a delete with this motion always fills register 1, even within one line, as
-    /// Vim does for `%`, `(`, `)`, `` ` ``, `{` and `}`.
+    /// Vim does for `%`, `(`, `)`, `` ` ``, `{`, `}` and searches.
     var deletesIntoRegisterOne: Bool {
         switch self {
         case .sentenceBackward, .sentenceForward, .paragraphBackward, .paragraphForward,
-             .matchingPair:
+             .matchingPair, .search:
             return true
         case .mark(_, let exact):
             return exact
@@ -84,7 +87,8 @@ enum Motion: Equatable {
     var isJump: Bool {
         switch self {
         case .firstLine, .lastLine, .sentenceBackward, .sentenceForward, .paragraphBackward,
-             .paragraphForward, .matchingPair, .screenTop, .screenMiddle, .screenBottom, .mark:
+             .paragraphForward, .matchingPair, .screenTop, .screenMiddle, .screenBottom, .mark,
+             .search:
             return true
         case .left, .right, .up, .down, .leftWrapping, .rightWrapping, .screenUp, .screenDown,
              .previousLineStart, .nextLineStart, .currentLineStart, .wordForward, .wordBackward,
@@ -113,7 +117,7 @@ extension Motion {
     /// Reads a motion from the keys typed after any count and register.
     static func parse(_ keys: [VimKey]) -> KeyParse<Motion> {
         guard let first = keys.first else { return .incomplete }
-        guard !first.control else { return .unknown }
+        guard !first.control else { return controlMotion(first.base) }
         switch first.base {
         case .left: return .complete(.left)
         case .right: return .complete(.right)
@@ -129,6 +133,17 @@ extension Motion {
         }
     }
 
+    /// Control-J and Control-N move down, and Control-P up, as `j` and `k` do.
+    private static func controlMotion(_ base: VimKey.Base) -> KeyParse<Motion> {
+        switch base {
+        case .character("j"), .character("n"): return .complete(.down)
+        case .character("p"): return .complete(.up)
+        case .character, .escape, .enter, .backspace, .tab, .up, .down, .left, .right, .home,
+             .end, .pageUp, .pageDown, .delete:
+            return .unknown
+        }
+    }
+
     private static let singleKey: [Character: Motion] = [
         "h": .left, "l": .right, "k": .up, "j": .down, " ": .rightWrapping,
         "w": .wordForward(big: false), "W": .wordForward(big: true),
@@ -140,6 +155,9 @@ extension Motion {
         "{": .paragraphBackward, "}": .paragraphForward, "%": .matchingPair,
         "H": .screenTop, "M": .screenMiddle, "L": .screenBottom,
         ";": .repeatFind(reversed: false), ",": .repeatFind(reversed: true),
+        "n": .search(.next(reversed: false)), "N": .search(.next(reversed: true)),
+        "*": .search(.word(forward: true, whole: true)),
+        "#": .search(.word(forward: false, whole: true)),
     ]
 
     private static let findKinds: [Character: FindKind] = [
@@ -169,7 +187,11 @@ extension Motion {
         case .character("e"): return .complete(.wordEndBackward(big: false))
         case .character("E"): return .complete(.wordEndBackward(big: true))
         case .character("_"): return .complete(.lastNonBlank)
-        default: return .unknown
+        case .character("*"): return .complete(.search(.word(forward: true, whole: false)))
+        case .character("#"): return .complete(.search(.word(forward: false, whole: false)))
+        case .character, .escape, .enter, .backspace, .tab, .left, .right, .home, .end,
+             .pageUp, .pageDown, .delete:
+            return .unknown
         }
     }
 }
@@ -197,6 +219,7 @@ struct MotionContext {
     let marks: [Character: Mark]
     let lastVisual: LastVisual?
     let lastFind: LastFind?
+    let lastSearch: LastSearch?
     /// With an operator, `w` stops at the end of the line, `l` may take the last character,
     /// and `h` and `l` that cannot move give empty text instead of failing, as in Vim.
     var operatorPending = false
@@ -255,7 +278,7 @@ enum Motions {
         case .repeatFind(let reversed):
             guard var find = context.lastFind else { return .failure(MotionFailure()) }
             if reversed { find.kind = find.kind.reversed }
-            return self.find(find, count1, from: cursor, repeated: count == nil, b)
+            return self.find(find, count1, from: cursor, repeated: count1 == 1, b)
         case .sentenceBackward, .sentenceForward:
             return sentence(forward: motion == .sentenceForward, count1, from: cursor, b)
         case .paragraphBackward, .paragraphForward:
@@ -270,6 +293,10 @@ enum Motions {
         case .screenBottom:
             return .success(firstNonBlank(screenLine(.bottom, count1, context), b))
         case .mark(let name, let exact): return mark(name, exact: exact, context)
+        case .search(let search):
+            return searchRequest(search, from: cursor, context).flatMap {
+                self.search($0.search, count1, from: $0.start, context)
+            }
         }
     }
 
@@ -572,8 +599,8 @@ enum Motions {
 
     // MARK: Finding a character
 
-    /// Vim's `searchc`. A repeated `t` or `T` without a count skips a match right next to the
-    /// cursor, so `;` always moves (Vim's default `cpoptions` lacks `;`).
+    /// Vim's `searchc`. A repeated `t` or `T` with a count of 1 skips a match right next to
+    /// the cursor, so `;` always moves (Vim's default `cpoptions` lacks `;`).
     private static func find(_ find: LastFind, _ count: Int, from cursor: Int, repeated: Bool,
                              _ b: VimBuffer) -> Outcome {
         let content = b.contentRange(at: b.lineIndex(of: cursor))

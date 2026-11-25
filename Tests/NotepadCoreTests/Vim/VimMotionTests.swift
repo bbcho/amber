@@ -222,6 +222,13 @@ final class VimMotionTests: XCTestCase {
         assertVim("a|bcabcabc", "tc2;", "abca|bcabc")
         assertVim("a|bcabcabc", "tc;,", "abc|abcabc")
         assertVim("|abab", "tb;", "ab|ab")
+        assertVim("|a,b,c,d", "t,1;", "a,|b,c,d")
+    }
+
+    func test_control_j_and_control_n_move_down_and_control_p_moves_up() {
+        assertVim("o|ne two\nxyz", "<C-j>", "one two\nx|yz")
+        assertVim("o|ne two\nxyz", "<C-n>", "one two\nx|yz")
+        assertVim("one two\nx|yz", "<C-p>", "o|ne two\nxyz")
     }
 
     func test_a_find_that_matches_nothing_fails_and_stays_on_the_line() {

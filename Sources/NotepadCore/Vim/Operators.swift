@@ -129,6 +129,11 @@ extension VimEngine {
             fail(&result)
             return
         }
+        var target = target
+        if case .motion(let motion) = target {
+            guard let remembered = remember(motion, &result, buffer, screen) else { return }
+            target = .motion(remembered)
+        }
         guard let span = span(of: target, for: op, command.count, &result, buffer, screen)
         else { return }
         result.window.desiredColumn = nil
@@ -219,7 +224,6 @@ extension VimEngine {
         var context = motionContext(result, buffer, screen)
         context.operatorPending = true
         context.operatorDeletes = op == .delete || op == .change
-        if case .find(let find) = motion { result.session.lastFind = find }
         let outcome: Motions.Outcome
         if op == .change, case .wordForward(let big) = motion, !buffer.isLineEnd(cursor),
            !buffer.isBlankCharacter(at: cursor) {
@@ -233,6 +237,7 @@ extension VimEngine {
             fail(&result)
             return nil
         case .success(let target):
+            if let warning = target.warning { result.effects.append(.message(warning)) }
             if motion.isJump { recordJump(&result.window, buffer) }
             guard target.shortfall != .cancelOperator else {
                 result.window.cursor = Motions.normalPosition(target.offset, in: buffer)
@@ -330,7 +335,7 @@ extension VimEngine {
             result.window.cursor = start + indent.utf16.count
         }
         result.window.mode = .insert
-        result.window.insertSession = InsertSession()
+        result.window.insertSession = InsertSession(start: result.window.cursor)
     }
 
     static func yank(_ span: OperatorSpan, register: Character?,

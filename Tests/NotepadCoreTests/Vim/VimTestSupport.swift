@@ -40,32 +40,77 @@ func render(_ text: String, cursor: Int, selections: [NSRange]) -> String {
     return marked as String
 }
 
-/// Feeds `keys` (Vim key notation) to the engine with `before` (cursor written as `|`).
-/// Edits are applied in order, each to the text the previous one produced. The fake view
-/// shows `lines` lines from `top`, follows scroll effects, and otherwise scrolls only as far
-/// as `scrolloff` needs, as the adapter does. Keys from a `.replay` effect are fed next, as
-/// the adapter does for `.`. `clipboard` is what the system clipboard holds.
-@discardableResult
-func runVim(_ before: String, _ keys: String, window: VimWindowState = VimWindowState(),
-            session: VimSession = VimSession(), lines: Int = 20, top: Int = 0,
-            wrapWidth: Int = 80, clipboard: String? = nil) -> VimRun {
-    let (start, cursor) = splitCursor(before)
-    let text = NSMutableString(string: start)
-    var window = window
-    window.cursor = cursor
-    var session = session
+/// Plays the adapter's part for tests: it feeds keys to the engine one at a time, applies
+/// edits in order, each to the text the previous one produced, and feeds the keys of a
+/// `.replay` effect next, marked as replayed, dropping the rest of a replay after a failure.
+/// The fake view shows `lines` lines from `top`, follows scroll effects, and otherwise
+/// scrolls only as far as `scrolloff` needs. `clipboard` is what the system clipboard holds.
+struct VimDriver {
+    var text: NSMutableString
+    var window: VimWindowState
+    var session: VimSession
     var effects: [VimEffect] = []
-    var top = top
     var selections: [NSRange] = []
-    var queue: [VimKey]
-    do { queue = try VimKey.parse(keys) } catch { preconditionFailure("bad keys \(keys)") }
-    while !queue.isEmpty {
-        let key = queue.removeFirst()
+    var top: Int
+    let lines: Int
+    let wrapWidth: Int
+    let clipboard: String?
+
+    init(_ before: String, window: VimWindowState = VimWindowState(),
+         session: VimSession = VimSession(), lines: Int = 20, top: Int = 0,
+         wrapWidth: Int = 80, clipboard: String? = nil) {
+        let (start, cursor) = splitCursor(before)
+        text = NSMutableString(string: start)
+        self.window = window
+        self.window.cursor = cursor
+        self.session = session
+        self.top = top
+        self.lines = lines
+        self.wrapWidth = wrapWidth
+        self.clipboard = clipboard
+    }
+
+    /// Feeds `keys`, written in Vim key notation, as typed keys.
+    mutating func press(_ keys: String) {
+        var queue: [(key: VimKey, replayed: Bool)]
+        do { queue = try VimKey.parse(keys).map { ($0, false) } } catch {
+            preconditionFailure("bad keys \(keys)")
+        }
+        while !queue.isEmpty {
+            let (key, replayed) = queue.removeFirst()
+            let snapshot = NSString(string: text)
+            let clipboard = self.clipboard
+            let result = VimEngine.handle(key, window: window, session: session, text: snapshot,
+                                          screen: screen(snapshot), clipboard: { clipboard },
+                                          replayed: replayed)
+            apply(result)
+            if replayed && result.effects.contains(.failure) {
+                queue.removeAll { $0.replayed }
+            }
+            for case .replay(let keys) in result.effects {
+                queue.insert(contentsOf: keys.map { ($0, true) }, at: 0)
+            }
+        }
+    }
+
+    /// Inserts `typed` at the cursor as AppKit does in Insert mode, and reports it.
+    mutating func type(_ typed: String) {
+        text.replaceCharacters(in: NSRange(location: window.cursor, length: 0), with: typed)
+        apply(VimEngine.recordTyped(typed, window: window, session: session))
+    }
+
+    /// Submits the `/` or `?` prompt with `pattern`, as the footer does.
+    mutating func search(_ pattern: String, forward: Bool = true) {
         let snapshot = NSString(string: text)
-        let screen = ScreenGeometry.fake(lines: lines, top: top, text: snapshot,
-                                         wrapWidth: wrapWidth)
-        let result = VimEngine.handle(key, window: window, session: session, text: snapshot,
-                                      screen: screen, clipboard: { clipboard })
+        apply(VimEngine.search(pattern, forward: forward, window: window, session: session,
+                               buffer: VimBuffer(snapshot), screen: screen(snapshot)))
+    }
+
+    private func screen(_ snapshot: NSString) -> ScreenGeometry {
+        ScreenGeometry.fake(lines: lines, top: top, text: snapshot, wrapWidth: wrapWidth)
+    }
+
+    private mutating func apply(_ result: VimResult) {
         for edit in result.edits {
             text.replaceCharacters(in: edit.range, with: edit.replacement)
         }
@@ -73,16 +118,28 @@ func runVim(_ before: String, _ keys: String, window: VimWindowState = VimWindow
         session = result.session
         selections = result.selections
         effects += result.effects
-        for case .replay(let replayed) in result.effects {
-            queue.insert(contentsOf: replayed, at: 0)
-        }
         top = fakeTop(after: result.effects, top: top, lines: lines, cursor: window.cursor,
                       text: NSString(string: text), scrolloff: session.options.scrolloff)
     }
-    let final = text as String
-    return VimRun(text: final, window: window, session: session, effects: effects, top: top,
-                  rendered: render(final, cursor: window.cursor, selections: selections),
-                  selections: selections)
+
+    var run: VimRun {
+        let final = text as String
+        return VimRun(text: final, window: window, session: session, effects: effects, top: top,
+                      rendered: render(final, cursor: window.cursor, selections: selections),
+                      selections: selections)
+    }
+}
+
+/// Feeds `keys` (Vim key notation) to the engine with `before` (cursor written as `|`),
+/// through a `VimDriver`.
+@discardableResult
+func runVim(_ before: String, _ keys: String, window: VimWindowState = VimWindowState(),
+            session: VimSession = VimSession(), lines: Int = 20, top: Int = 0,
+            wrapWidth: Int = 80, clipboard: String? = nil) -> VimRun {
+    var driver = VimDriver(before, window: window, session: session, lines: lines, top: top,
+                           wrapWidth: wrapWidth, clipboard: clipboard)
+    driver.press(keys)
+    return driver.run
 }
 
 /// Asserts that `keys` turn `before` into `after`, both written with `|` for the cursor.

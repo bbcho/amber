@@ -99,7 +99,7 @@ extension VimEngine {
             let insert = BlockInsert(kind: .change, block: block, start: at, cursorAfter: nil)
             result.window.mode = .insert
             result.window.cursor = at
-            result.window.insertSession = InsertSession(block: insert)
+            result.window.insertSession = InsertSession(start: at, block: insert)
             return
         }
         result.window.cursor = lineStart + normalColumn(at - lineStart, in: contents[0])
@@ -250,7 +250,7 @@ extension VimEngine {
                                  cursorAfter: topLeft)
         result.window.mode = .insert
         result.window.cursor = at
-        result.window.insertSession = InsertSession(block: insert)
+        result.window.insertSession = InsertSession(start: at, block: insert)
         result.window.changeInProgress = selection.change
     }
 

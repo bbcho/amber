@@ -63,7 +63,7 @@ enum VisualCommand: Equatable {
         case .unknown: return .unknown
         case .complete(let command):
             switch command {
-            case .motion, .scroll, .jumpOlder, .jumpNewer, .setMark:
+            case .motion, .scroll, .jumpOlder, .jumpNewer, .setMark, .record, .play:
                 return .complete(.normal(command))
             case .operator, .operate, .edit, .startVisual, .reselectVisual:
                 return .unknown

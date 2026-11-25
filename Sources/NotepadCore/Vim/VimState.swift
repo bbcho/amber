@@ -40,13 +40,41 @@ public struct LastFind: Equatable {
     }
 }
 
+/// A search offset such as `/foo/e-1` or `/foo/+2`.
+public struct SearchOffset: Equatable {
+    public enum Anchor: Equatable {
+        /// `[+-]n`: lines below or above the match, in the first column.
+        case line
+        /// `s` or `b`: characters after or before the start of the match.
+        case start
+        /// `e`: characters after or before the last character of the match.
+        case end
+    }
+
+    public var anchor: Anchor
+    public var amount: Int
+
+    public init(anchor: Anchor, amount: Int) {
+        self.anchor = anchor
+        self.amount = amount
+    }
+
+    public static let none = SearchOffset(anchor: .start, amount: 0)
+}
+
 public struct LastSearch: Equatable {
     public var pattern: String
     public var forward: Bool
+    public var offset: SearchOffset
+    /// False after `*` and `#`, whose pattern ignores `smartcase` also for `n`, as in Vim.
+    public var usesSmartCase: Bool
 
-    public init(pattern: String, forward: Bool) {
+    public init(pattern: String, forward: Bool, offset: SearchOffset = .none,
+                usesSmartCase: Bool = true) {
         self.pattern = pattern
         self.forward = forward
+        self.offset = offset
+        self.usesSmartCase = usesSmartCase
     }
 }
 
@@ -160,9 +188,15 @@ public struct BlockInsert: Equatable {
 
 /// An Insert or Replace mode session, from the command that started it to Escape.
 public struct InsertSession: Equatable {
-    /// The keys that inserted text so far. They become the `.` register, and a count types
+    /// The keys typed so far, after the command that started the session. A count types
     /// them again.
     public var typed: [VimKey] = []
+    /// Where typing started (Vim's `Insstart`). Control-W and Control-U stop here once, and
+    /// the text from here to the cursor becomes the `.` register.
+    public var start: Int
+    /// In Replace mode, what each grapheme typed so far overwrote, oldest first; nil for one
+    /// added past the line end or a line break. Backspace puts these back.
+    public var overwritten: [String?] = []
     /// How many times the text goes in: Escape types the keys `count - 1` more times, as
     /// `3ix<Esc>` inserts `xxx`.
     public var count: Int
@@ -170,7 +204,9 @@ public struct InsertSession: Equatable {
     public var repeatPrefix: String
     public var block: BlockInsert?
 
-    public init(count: Int = 1, repeatPrefix: String = "", block: BlockInsert? = nil) {
+    public init(start: Int, count: Int = 1, repeatPrefix: String = "",
+                block: BlockInsert? = nil) {
+        self.start = start
         self.count = count
         self.repeatPrefix = repeatPrefix
         self.block = block
@@ -235,6 +271,8 @@ public struct VimSession: Equatable {
     /// The size of the selection the last Visual operator used, for a count before `v`.
     public var lastVisualSize: VisualSize?
     public var recording: Recording?
+    /// The register `@` played last, which `@@` plays again; `:` after `@:`.
+    public var lastPlayedRegister: Character?
 
     public init() {}
 }
