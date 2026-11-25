@@ -129,10 +129,8 @@ extension VimEngine {
             fail(&result)
             return
         }
-        var target = target
         if case .motion(let motion) = target {
-            guard let remembered = remember(motion, &result, buffer, screen) else { return }
-            target = .motion(remembered)
+            guard remember(motion, &result, buffer, screen) else { return }
         }
         guard let span = span(of: target, for: op, command.count, &result, buffer, screen)
         else { return }
@@ -234,6 +232,7 @@ extension VimEngine {
         switch outcome {
         case .failure(let failure):
             if let message = failure.message { result.effects.append(.message(message)) }
+            if let cursor = failure.cursor { result.window.cursor = cursor }
             fail(&result)
             return nil
         case .success(let target):

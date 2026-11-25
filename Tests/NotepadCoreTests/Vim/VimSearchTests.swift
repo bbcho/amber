@@ -153,6 +153,26 @@ final class VimSearchTests: XCTestCase {
         XCTAssertEqual(dots.register("/"), charwise("\\.\\*"))
     }
 
+    func test_star_and_hash_record_the_jump_at_the_cursor_inside_the_word() {
+        assertVim("xx f|oo yy foo", "*``", "xx f|oo yy foo")
+        assertVim("xx f|oo yy foo", "*''", "|xx foo yy foo")
+        assertVim("xx f|oo yy foo", "g*``", "xx f|oo yy foo")
+        assertVim("foo yy f|oo xx", "#``", "foo yy f|oo xx")
+    }
+
+    func test_an_operator_on_star_or_hash_starts_at_the_cursor_inside_the_word() {
+        assertVim("xx f|oo yy foo", "d*", "xx f|foo")
+        assertVim("foo yy f|oo xx", "d#", "|oo xx")
+    }
+
+    func test_a_failed_star_leaves_the_cursor_at_the_word_start() {
+        let run = assertVim("xx f|oo yy", "*", "xx |foo yy", session: noWrap)
+        XCTAssertEqual(Array(run.effects.suffix(2)),
+                       [.message("E385: Search hit BOTTOM without match for: \\<foo\\>"),
+                        .failure])
+        assertVim("xx f|oo yy", "d*", "xx |foo yy", session: noWrap)
+    }
+
     func test_star_on_an_empty_line_fails_with_e348() {
         let run = assertVim("|\nx", "*", "|\nx")
         XCTAssertEqual(run.effects, [.message("E348: No string under cursor"), .failure])

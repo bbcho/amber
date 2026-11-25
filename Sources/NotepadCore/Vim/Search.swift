@@ -160,26 +160,25 @@ extension VimEngine {
 
     /// What a motion leaves behind for later commands, before it runs: the last `f`, `t`,
     /// `F` or `T`, and for a search, the last pattern, the `/` register and the highlight.
-    /// `*` and `#` also move the cursor to the start of the word first, as in Vim. Nil after
-    /// a failure is reported.
+    /// The cursor stays put, so the jump and an operator start there; `*` and `#` search
+    /// from the start of the word. False after a failure is reported.
     static func remember(_ motion: Motion, _ result: inout VimResult, _ buffer: VimBuffer,
-                         _ screen: ScreenGeometry) -> Motion? {
+                         _ screen: ScreenGeometry) -> Bool {
         if case .find(let find) = motion { result.session.lastFind = find }
-        guard case .search(let kind) = motion else { return motion }
+        guard case .search(let kind) = motion else { return true }
         let context = motionContext(result, buffer, screen)
         switch Motions.searchRequest(kind, from: result.window.cursor, context) {
         case .failure(let failure):
             if let message = failure.message { result.effects.append(.message(message)) }
             fail(&result)
-            return nil
-        case .success(let (search, start)):
-            result.window.cursor = start
+            return false
+        case .success(let (search, _)):
             if kind.isNewSearch { result.session.lastSearch = search }
             result.session.registers.setReadOnly("/", search.pattern)
             if result.session.options.hlsearch {
                 result.effects.append(.highlightSearch(search.pattern))
             }
-            return .search(.pattern(search))
+            return true
         }
     }
 }

@@ -341,13 +341,14 @@ public enum VimEngine {
 
     private static func move(_ motion: Motion, count: Int?, _ result: inout VimResult,
                              _ buffer: VimBuffer, _ screen: ScreenGeometry) {
-        guard let motion = remember(motion, &result, buffer, screen) else { return }
+        guard remember(motion, &result, buffer, screen) else { return }
         var context = motionContext(result, buffer, screen)
         context.visual = result.window.mode.isVisual
         switch Motions.target(of: motion, count: count, from: result.window.cursor,
                               in: context) {
         case .failure(let failure):
             if let message = failure.message { result.effects.append(.message(message)) }
+            if let cursor = failure.cursor { result.window.cursor = cursor }
             result.effects.append(.failure)
         case .success(let target):
             if let warning = target.warning { result.effects.append(.message(warning)) }

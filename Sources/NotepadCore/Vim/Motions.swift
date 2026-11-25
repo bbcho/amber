@@ -40,6 +40,9 @@ enum Shortfall: Equatable {
 /// A motion that could not move. `message` is Vim's error text, when Vim shows one.
 struct MotionFailure: Error, Equatable {
     var message: String?
+    /// Where the cursor stays after the failure, when not where it was: a `*` that finds
+    /// nothing leaves it at the start of the word, as in Vim.
+    var cursor: Int?
 }
 
 enum Motion: Equatable {
@@ -294,8 +297,12 @@ enum Motions {
             return .success(firstNonBlank(screenLine(.bottom, count1, context), b))
         case .mark(let name, let exact): return mark(name, exact: exact, context)
         case .search(let search):
-            return searchRequest(search, from: cursor, context).flatMap {
-                self.search($0.search, count1, from: $0.start, context)
+            return searchRequest(search, from: cursor, context).flatMap { request in
+                self.search(request.search, count1, from: request.start, context).mapError {
+                    var failure = $0
+                    if request.start != cursor { failure.cursor = request.start }
+                    return failure
+                }
             }
         }
     }
