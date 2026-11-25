@@ -55,6 +55,10 @@ struct VimDriver {
     let lines: Int
     let wrapWidth: Int
     let clipboard: String?
+    /// Whether `.ex` effects run through `ExCommand` and `ExRunner`, as in the app.
+    var runsExCommands = false
+    /// The lines a `:g` with `:normal` still has to visit, while it runs.
+    private var lineMarks: ExLineMarks?
 
     init(_ before: String, window: VimWindowState = VimWindowState(),
          session: VimSession = VimSession(), lines: Int = 20, top: Int = 0,
@@ -72,10 +76,18 @@ struct VimDriver {
 
     /// Feeds `keys`, written in Vim key notation, as typed keys.
     mutating func press(_ keys: String) {
-        var queue: [(key: VimKey, replayed: Bool)]
-        do { queue = try VimKey.parse(keys).map { ($0, false) } } catch {
+        do { try feed(VimKey.parse(keys), replayed: false) } catch {
             preconditionFailure("bad keys \(keys)")
         }
+    }
+
+    /// Feeds `keys` one at a time; the keys of a `.replay` effect come next, marked as
+    /// replayed, and a failure drops the rest of a replay. With `runsExCommands`, an `.ex`
+    /// effect runs as the adapter runs it. Returns whether a replayed key failed.
+    @discardableResult
+    mutating func feed(_ keys: [VimKey], replayed: Bool) -> Bool {
+        var queue = keys.map { (key: $0, replayed: replayed) }
+        var failed = false
         while !queue.isEmpty {
             let (key, replayed) = queue.removeFirst()
             let snapshot = NSString(string: text)
@@ -84,13 +96,80 @@ struct VimDriver {
                                           screen: screen(snapshot), clipboard: { clipboard },
                                           replayed: replayed)
             apply(result)
-            if replayed && result.effects.contains(.failure) {
+            var failure = result.effects.contains(.failure)
+            if runsExCommands {
+                for case .ex(let line) in result.effects where runEx(line) { failure = true }
+            }
+            if replayed && failure {
                 queue.removeAll { $0.replayed }
+                failed = true
             }
             for case .replay(let keys) in result.effects {
                 queue.insert(contentsOf: keys.map { ($0, true) }, at: 0)
             }
         }
+        return failed
+    }
+
+    /// Runs an ex command line as the adapter does. Returns whether it failed.
+    private mutating func runEx(_ line: String) -> Bool {
+        let command: ExCommand
+        do { command = try ExCommand.parse(line) } catch {
+            effects += [.message(error.localizedDescription), .failure]
+            return true
+        }
+        switch command {
+        case .text(let range, let textCommand):
+            let clipboard = self.clipboard
+            let result = ExRunner.run(textCommand, range: range, window: window,
+                                      session: session, text: NSString(string: text),
+                                      clipboard: { clipboard })
+            apply(result)
+            for case .replayLines(let replay) in result.effects { replayLines(replay) }
+            return result.effects.contains(.failure)
+        case .set(let arguments):
+            do {
+                if let message = try session.options.set(arguments) {
+                    effects.append(.message(message))
+                }
+            } catch {
+                effects += [.message(error.localizedDescription), .failure]
+                return true
+            }
+            return false
+        case .file, .markdown, .checkTime:
+            return false
+        }
+    }
+
+    /// Plays `:normal` as the adapter does: on each line from its start, ending a command the
+    /// keys leave unfinished with Escape; a failure ends that line's keys only. Lines that
+    /// `:g` marked are followed through the edits and skipped once deleted.
+    private mutating func replayLines(_ replay: LineReplay) {
+        switch replay.lines {
+        case .cursor:
+            replayOnce(replay.keys)
+        case .numbers(let lines):
+            for line in lines {
+                let buffer = VimBuffer(NSString(string: text))
+                window.cursor = buffer.lineRange(at: min(line, buffer.lineCount - 1)).location
+                replayOnce(replay.keys)
+            }
+        case .marked(let lines):
+            lineMarks = ExLineMarks(lines: lines, in: VimBuffer(NSString(string: text)))
+            while let offset = lineMarks?.next() {
+                window.cursor = offset
+                replayOnce(replay.keys)
+            }
+            lineMarks = nil
+        }
+    }
+
+    private mutating func replayOnce(_ keys: [VimKey]) {
+        feed(keys, replayed: true)
+        let unfinished = !window.pendingKeys.isEmpty || window.mode == .insert
+            || window.mode == .replace || window.mode == .operatorPending
+        if unfinished { feed([VimKey(.escape)], replayed: true) }
     }
 
     /// Inserts `typed` at the cursor as AppKit does in Insert mode, and reports it.
@@ -112,6 +191,7 @@ struct VimDriver {
 
     private mutating func apply(_ result: VimResult) {
         for edit in result.edits {
+            lineMarks?.update(after: edit, in: text)
             text.replaceCharacters(in: edit.range, with: edit.replacement)
         }
         window = result.window
@@ -150,6 +230,27 @@ func assertVim(_ before: String, _ keys: String, _ after: String,
                file: StaticString = #filePath, line: UInt = #line) -> VimRun {
     let run = runVim(before, keys, window: window, session: session, lines: lines, top: top,
                      wrapWidth: wrapWidth, clipboard: clipboard)
+    XCTAssertEqual(run.rendered, after, "keys \(keys)", file: file, line: line)
+    return run
+}
+
+/// `runVim` with `.ex` effects run as the app runs them, so `:` commands change the text.
+@discardableResult
+func runWithEx(_ before: String, _ keys: String, window: VimWindowState = VimWindowState(),
+               session: VimSession = VimSession(), clipboard: String? = nil) -> VimRun {
+    var driver = VimDriver(before, window: window, session: session, clipboard: clipboard)
+    driver.runsExCommands = true
+    driver.press(keys)
+    return driver.run
+}
+
+/// `assertVim` with `.ex` effects run as the app runs them.
+@discardableResult
+func assertEx(_ before: String, _ keys: String, _ after: String,
+              window: VimWindowState = VimWindowState(), session: VimSession = VimSession(),
+              clipboard: String? = nil, file: StaticString = #filePath,
+              line: UInt = #line) -> VimRun {
+    let run = runWithEx(before, keys, window: window, session: session, clipboard: clipboard)
     XCTAssertEqual(run.rendered, after, "keys \(keys)", file: file, line: line)
     return run
 }

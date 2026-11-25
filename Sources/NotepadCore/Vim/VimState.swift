@@ -80,11 +80,15 @@ public struct LastSearch: Equatable {
 
 public struct LastSubstitute: Equatable {
     public var pattern: String
+    /// With `~` already replaced by the replacement before it, as Vim stores it.
     public var replacement: String
+    /// What `:s/x/y/&` and `:&&` keep.
+    public var flags: SubstituteFlags
 
-    public init(pattern: String, replacement: String) {
+    public init(pattern: String, replacement: String, flags: SubstituteFlags = SubstituteFlags()) {
         self.pattern = pattern
         self.replacement = replacement
+        self.flags = flags
     }
 }
 

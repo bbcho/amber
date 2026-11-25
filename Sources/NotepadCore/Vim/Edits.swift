@@ -14,6 +14,8 @@ enum Edit: Equatable {
     case insert(InsertPlace)
     case undo, redo
     case repeatChange
+    /// `&`, which runs `:s` again on the line, and `g&`, which runs it on every line.
+    case repeatSubstitute(everyLine: Bool)
 
     struct Put: Equatable {
         /// `P` and `gP`.
@@ -42,6 +44,7 @@ enum Edit: Equatable {
         "I": .edit(.insert(.firstNonBlank)), "A": .edit(.insert(.lineEnd)),
         "o": .edit(.insert(.lineBelow)), "O": .edit(.insert(.lineAbove)),
         "u": .edit(.undo), ".": .edit(.repeatChange),
+        "&": .edit(.repeatSubstitute(everyLine: false)),
     ]
 
     private static let afterG: [Character: NormalCommand] = [
@@ -49,6 +52,7 @@ enum Edit: Equatable {
         "p": .edit(.put(Put(before: false, cursorAfter: true))),
         "P": .edit(.put(Put(before: true, cursorAfter: true))),
         "i": .edit(.insert(.lastInsert)),
+        "&": .edit(.repeatSubstitute(everyLine: true)),
     ]
 
     /// Reads an operator or edit from the keys after any count and register, or nil when the
@@ -102,6 +106,9 @@ extension VimEngine {
         case .repeatChange:
             repeatChange(input, &result, buffer)
             return
+        case .repeatSubstitute(let everyLine):
+            repeatSubstitute(everyLine: everyLine, count: input.count, &result)
+            return
         case .insert(let place):
             startInsert(place, input, &result, buffer)
             return
@@ -119,6 +126,18 @@ extension VimEngine {
             changed = addToNumber(subtract: subtract, input, &result, buffer)
         }
         if changed { result.session.lastChange = input.change }
+    }
+
+    /// Vim's `&` types `:s` and Return, so the command line becomes the `:` register and a
+    /// count becomes a range. `g&` runs `:%s//~/&` without touching the register.
+    private static func repeatSubstitute(everyLine: Bool, count: Int?,
+                                         _ result: inout VimResult) {
+        guard !everyLine else {
+            result.effects.append(.ex("%s//~/&"))
+            return
+        }
+        let typed = (count.map(String.init) ?? "") + ":s"
+        result.effects.append(.replay(typed.map { VimKey(.character($0)) } + [VimKey(.enter)]))
     }
 
     /// `.` asks the adapter to feed the last change's keys back, with a new count or

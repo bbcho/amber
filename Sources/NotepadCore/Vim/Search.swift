@@ -27,6 +27,10 @@ enum SearchMotion: Equatable {
 extension VimEngine {
     private static let prompts: Set<Character> = ["/", "?", ":"]
 
+    /// What `:` starts the command line with in Visual mode. `@:` there leaves it out of the
+    /// command it repeats, as Vim's `do_execreg` does, so the new selection's range is used.
+    static let visualRange = "'<,'>"
+
     /// Runs a search submitted at the `/` or `?` prompt: `pattern` is the text typed after
     /// the prompt key, with any offset, such as `foo/e`. The window's pending count,
     /// register, operator and Visual selection apply, as when Return is typed.
@@ -49,14 +53,31 @@ extension VimEngine {
     }
 
     /// Whether the pending keys are a prompt key that opens the footer: `/` or `?`, or `:`
-    /// in Normal mode, but not the `?` that doubles `g?`.
-    static func opensCommandLine(_ result: inout VimResult) -> Bool {
+    /// in Normal or Visual mode, but not the `?` that doubles `g?`. `:` in Visual mode ends
+    /// it and starts the line with `'<,'>`; after a count it starts with `.,.+{count-1}`.
+    static func opensCommandLine(_ result: inout VimResult, _ buffer: VimBuffer) -> Bool {
         let window = result.window
         guard window.pendingKeys.count == 1, let prompt = window.pendingKeys[0].argumentCharacter,
-              prompts.contains(prompt), prompt != ":" || window.mode == .normal,
+              prompts.contains(prompt),
+              prompt != ":" || window.mode == .normal || window.mode.isVisual,
               window.operatorKeys.last != window.pendingKeys[0]
         else { return false }
-        result.effects.append(.openCommandLine(prompt))
+        guard prompt == ":" else {
+            result.effects.append(.openCommandLine(prompt))
+            return true
+        }
+        var prefill = ""
+        if window.mode.isVisual {
+            prefill = visualRange
+            endVisual(&result, buffer)
+        } else if window.count != nil || window.leadingCount != nil {
+            let count = (window.leadingCount ?? 1) * (window.count ?? 1)
+            prefill = count == 1 ? "." : ".,.+\(count - 1)"
+        }
+        clearPending(&result.window)
+        result.window.pendingKeys = [VimKey(.character(":"))]
+            + prefill.map { VimKey(.character($0)) }
+        result.effects.append(.openCommandLine(":", prefill: prefill))
         return true
     }
 
@@ -88,6 +109,7 @@ extension VimEngine {
         let text = String(keys.dropFirst().compactMap(\.argumentCharacter))
         guard prompt != ":" else {
             clearPending(&result.window)
+            if !text.isEmpty { result.session.registers.setReadOnly(":", text) }
             result.effects.append(.ex(text))
             return
         }

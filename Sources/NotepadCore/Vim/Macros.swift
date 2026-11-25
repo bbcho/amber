@@ -52,11 +52,14 @@ extension VimEngine {
                                   _ clipboard: () -> String?) -> [VimKey]? {
         let registers = result.session.registers
         if register == ":" {
-            guard let command = registers.value(":", clipboard: clipboard)?.text,
+            guard var command = registers.value(":", clipboard: clipboard)?.text,
                   !command.isEmpty else {
                 result.effects.append(.message("E30: No previous command line"))
                 fail(&result)
                 return nil
+            }
+            if result.window.mode.isVisual && command.hasPrefix(visualRange) {
+                command.removeFirst(visualRange.count)
             }
             return [VimKey(.character(":"))] + command.map { VimKey(.character($0)) }
                 + [VimKey(.enter)]

@@ -21,16 +21,48 @@ public enum ScrollRequest: Equatable {
 
 public enum VimEffect: Equatable {
     case scroll(ScrollRequest)
-    case openCommandLine(Character)
+    /// Open the footer for `:`, `/` or `?`, showing `prefill` already typed: `'<,'>` after
+    /// `:` in Visual mode, and `.,.+2` after `3:`. The engine has those characters in its
+    /// pending keys, so the footer submits only what is typed after them.
+    case openCommandLine(Character, prefill: String = "")
     case undo(Int)
     case redo(Int)
     case replay([VimKey])
+    /// `:normal`, alone or under `:g`, for the adapter to play; see `LineReplay`.
+    case replayLines(LineReplay)
     case message(String)
     /// Vim's beep. It ends a count, a macro or `:norm`.
     case failure
     case setClipboard(String)
     case highlightSearch(String?)
     case ex(String)
+}
+
+/// The keys of `:normal` and the lines they run on. For each line, the adapter puts the
+/// cursor at the start of the line (except for `.cursor`), feeds `keys` back with
+/// `replayed: true`, and then, if they leave Insert or Replace mode, an operator, a prompt or
+/// other pending keys, feeds Escape and ignores its failure, as Vim ends `:normal`. A failure
+/// drops the rest of that line's keys; the next line still runs, as in Vim. The replay
+/// limits of macros apply to the whole run.
+public struct LineReplay: Equatable {
+    public enum Lines: Equatable {
+        /// `:normal` without a range: once, from the cursor.
+        case cursor
+        /// `:{range}normal`: these line numbers (from 0) in order. A number past the last
+        /// line means the last line, as Vim clamps the cursor, so `:%norm dd` empties the text.
+        case numbers(ClosedRange<Int>)
+        /// `:g` with `:normal`: the lines it marked (from 0), in order. Follow them through
+        /// each edit with `ExLineMarks` and skip those an earlier run deleted.
+        case marked([Int])
+    }
+
+    public var keys: [VimKey]
+    public var lines: Lines
+
+    public init(keys: [VimKey], lines: Lines) {
+        self.keys = keys
+        self.lines = lines
+    }
 }
 
 public struct VimResult: Equatable {
@@ -216,7 +248,7 @@ public enum VimEngine {
         }
         result.window.pendingKeys.append(key)
         if inNormal && result.window.pendingKeys == [registerKey] { return }
-        if opensCommandLine(&result) || stopsRecording(&result) { return }
+        if opensCommandLine(&result, buffer) || stopsRecording(&result) { return }
         if visual {
             switch VisualCommand.parse(result.window.pendingKeys) {
             case .incomplete: return

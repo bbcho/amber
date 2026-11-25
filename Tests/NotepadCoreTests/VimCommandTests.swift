@@ -11,7 +11,7 @@ final class VimCommandTests: XCTestCase {
             ("wquit", .write(path: nil, force: false, quit: true))
         ]
         for (input, expected) in examples {
-            XCTAssertEqual(try VimCommand.parse(input), expected, input)
+            XCTAssertEqual(try ExCommand.parse(input), .file(expected), input)
         }
     }
 
@@ -27,7 +27,7 @@ final class VimCommandTests: XCTestCase {
             ("qall", .quit(all: true, force: false))
         ]
         for (input, expected) in examples {
-            XCTAssertEqual(try VimCommand.parse(input), expected, input)
+            XCTAssertEqual(try ExCommand.parse(input), .file(expected), input)
         }
     }
 
@@ -39,7 +39,7 @@ final class VimCommandTests: XCTestCase {
             ("new", .newWindow)
         ]
         for (input, expected) in examples {
-            XCTAssertEqual(try VimCommand.parse(input), expected, input)
+            XCTAssertEqual(try ExCommand.parse(input), .file(expected), input)
         }
     }
 
@@ -61,15 +61,15 @@ final class VimCommandTests: XCTestCase {
             ("edit!", .edit(path: nil, force: true))
         ]
         for (input, expected) in examples {
-            XCTAssertEqual(try VimCommand.parse(input), expected, input)
+            XCTAssertEqual(try ExCommand.parse(input), .file(expected), input)
         }
     }
 
     func test_optional_colon_and_outer_whitespace_are_ignored() throws {
         for input in ["w", ":w", " \t:w \n", " : w \t", "\tw\n"] {
             XCTAssertEqual(
-                try VimCommand.parse(input),
-                .write(path: nil, force: false, quit: false),
+                try ExCommand.parse(input),
+                .file(.write(path: nil, force: false, quit: false)),
                 input
             )
         }
@@ -87,14 +87,14 @@ final class VimCommandTests: XCTestCase {
             ("w !filename.txt", .write(path: "!filename.txt", force: false, quit: false))
         ]
         for (input, expected) in examples {
-            XCTAssertEqual(try VimCommand.parse(input), expected, input)
+            XCTAssertEqual(try ExCommand.parse(input), .file(expected), input)
         }
     }
 
     func test_commands_without_paths_reject_trailing_arguments() {
         for command in ["wa", "wall!", "wqa", "wqall!", "q", "quit!", "qa", "qall!",
                         "x", "exit", "new"] {
-            XCTAssertThrowsError(try VimCommand.parse(":" + command + " extra file")) { error in
+            XCTAssertThrowsError(try ExCommand.parse(":" + command + " extra file")) { error in
                 XCTAssertEqual(error.localizedDescription, "E488: Trailing characters: extra file")
             }
         }
@@ -102,7 +102,7 @@ final class VimCommandTests: XCTestCase {
 
     func test_unknown_commands_and_unsupported_bangs_are_rejected() {
         for command in ["wri", "open", "W", "x!", "exit!", "new!", "w!!", ":w", "!"] {
-            XCTAssertThrowsError(try VimCommand.parse(":" + command)) { error in
+            XCTAssertThrowsError(try ExCommand.parse(":" + command)) { error in
                 let expected = "E492: Not an editor command: " + command
                 XCTAssertEqual(error.localizedDescription, expected)
             }
@@ -110,28 +110,28 @@ final class VimCommandTests: XCTestCase {
     }
 
     func test_mm_toggles_the_markdown_preview() throws {
-        XCTAssertEqual(try VimCommand.parse("mm"), .markdown)
-        XCTAssertEqual(try VimCommand.parse(":mm"), .markdown)
-        XCTAssertThrowsError(try VimCommand.parse("mm x")) { error in
+        XCTAssertEqual(try ExCommand.parse("mm"), .markdown)
+        XCTAssertEqual(try ExCommand.parse(":mm"), .markdown)
+        XCTAssertThrowsError(try ExCommand.parse("mm x")) { error in
             XCTAssertEqual(error.localizedDescription, "E488: Trailing characters: x")
         }
-        XCTAssertThrowsError(try VimCommand.parse("mm!")) { error in
+        XCTAssertThrowsError(try ExCommand.parse("mm!")) { error in
             XCTAssertEqual(error.localizedDescription, "E492: Not an editor command: mm!")
         }
     }
 
     func test_checktime_checks_files_for_outside_changes() throws {
         for input in ["checkt", "checkti", "checktim", "checktime", ":checktime"] {
-            XCTAssertEqual(try VimCommand.parse(input), .checkTime, input)
+            XCTAssertEqual(try ExCommand.parse(input), .checkTime, input)
         }
-        XCTAssertThrowsError(try VimCommand.parse("checktime now")) { error in
+        XCTAssertThrowsError(try ExCommand.parse("checktime now")) { error in
             XCTAssertEqual(error.localizedDescription, "E488: Trailing characters: now")
         }
     }
 
     func test_empty_input_reports_an_empty_command() {
         for input in ["", " \t\n", ":", " : \t"] {
-            XCTAssertThrowsError(try VimCommand.parse(input)) { error in
+            XCTAssertThrowsError(try ExCommand.parse(input)) { error in
                 XCTAssertEqual(error.localizedDescription, "Empty command")
             }
         }

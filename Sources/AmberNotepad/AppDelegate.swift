@@ -169,7 +169,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func execute(_ input: String, in editor: EditorWindow) {
         do {
-            switch try VimCommand.parse(input) {
+            let command: VimCommand
+            switch try ExCommand.parse(input) {
+            case .file(let file): command = file
+            case .markdown: return editor.toggleMarkdown()
+            case .checkTime: return editors.forEach { $0.checkDisk() }
+            case .set, .text:
+                let body = input.trimmingCharacters(in: .whitespacesAndNewlines)
+                let typed = body.hasPrefix(":") ? String(body.dropFirst()) : body
+                return editor.showCommandMessage("E492: Not an editor command: " + typed)
+            }
+            switch command {
             case let .write(path, force, quit):
                 if editor.write(path: path, force: force), quit { editor.close() }
             case let .writeAll(force, quit):
@@ -186,8 +196,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 if !editor.hasUnsavedChanges || editor.write() { editor.close() }
             case let .edit(path, force): editor.edit(path: path, force: force)
             case .newWindow: try createWindow()
-            case .markdown: editor.toggleMarkdown()
-            case .checkTime: for candidate in editors { candidate.checkDisk() }
             }
         } catch { editor.showCommandMessage(error.localizedDescription) }
     }
