@@ -1,11 +1,12 @@
 import AppKit
+import NotepadCore
 
 /// Read-only display of rendered Markdown, scrolled with Vim-style keys.
 @MainActor
 final class MarkdownPreviewView: NSTextView {
     var commandRequested: (() -> Void)?
-    private var count = ""
-    private var awaitingSecondG = false
+    private var vim = VimWindowState()
+    private var session = VimSession()
 
     /// Built on an explicit TextKit 1 stack so block decorations can use the layout manager.
     convenience init() {
@@ -97,43 +98,65 @@ final class MarkdownPreviewView: NSTextView {
         (layoutManager?.defaultLineHeight(for: MarkdownRenderer.bodyFont) ?? 16) + 3
     }
 
+    /// Scroll keys go through the engine, which parses counts, `gg`, `G`, Control-D/U and the
+    /// rest. The engine sees the view as a window over one empty line per row of text, with
+    /// its cursor on the top row, so every move is measured in the rows `j` scrolls by;
+    /// whatever the engine does to the cursor or the top row becomes a scroll, and nothing else.
     override func keyDown(with event: NSEvent) {
-        let key = event.charactersIgnoringModifiers ?? ""
-        let flags = event.modifierFlags
-        let isNavigationKey = event.specialKey != nil && !flags.contains(.control)
-        if flags.contains(.command) || flags.contains(.option) || isNavigationKey {
+        let isNavigationKey = event.specialKey != nil && !event.modifierFlags.contains(.control)
+        guard !isNavigationKey else { return super.keyDown(with: event) }
+        switch event.vimInput {
+        case .shortcut, .optionChord:
             super.keyDown(with: event)
-            return
-        }
-        if !flags.contains(.control), key.count == 1, let digit = key.first, digit.isNumber,
-           digit != "0" || !count.isEmpty {
-            if count.count < 4 { count += key }
-            return
-        }
-        let repetitions = Int(count) ?? 1
-        let explicitCount = Int(count)
-        count = ""
-        if awaitingSecondG {
-            awaitingSecondG = false
-            if key == "g" { scroll(toY: 0) }
-            return
-        }
-        if flags.contains(.control) {
-            let halfPage = max(Int(visibleRect.height / 2 / lineStep), 1)
-            switch key {
-            case "d": scroll(lines: explicitCount ?? halfPage)
-            case "u": scroll(lines: -(explicitCount ?? halfPage))
-            default: super.keyDown(with: event)
+        case .unmapped:
+            break
+        case .key(let key):
+            if key == VimKey(.character(":")) {
+                vim = VimWindowState()
+                commandRequested?()
+            } else {
+                scroll(with: key)
             }
+        }
+    }
+
+    private func scroll(with key: VimKey) {
+        let rows = max(Int(bounds.height / lineStep), 1)
+        let page = max(Int(visibleRect.height / lineStep), 1)
+        let buffer = VimBuffer(NSString(string: String(repeating: "\n", count: rows)))
+        let top = min(Int(visibleRect.minY / lineStep), rows - 1)
+        vim.cursor = buffer.lineRange(at: top).location
+        let screen = ScreenGeometry(
+            firstVisibleLine: top, lastVisibleLine: min(top + page - 1, rows - 1),
+            linesPerPage: page, moveScreenLines: { offset, _ in offset }
+        )
+        let result = VimEngine.handle(key, window: vim, session: session, buffer: buffer,
+                                      screen: screen, clipboard: { nil })
+        guard result.edits.isEmpty, result.window.mode == .normal else {
+            vim = VimWindowState()
             return
         }
-        switch key {
-        case "j": scroll(lines: repetitions)
-        case "k": scroll(lines: -repetitions)
-        case "g": awaitingSecondG = true
-        case "G": scroll(toY: .greatestFiniteMagnitude)
-        case ":": commandRequested?()
-        default: break
+        vim = result.window
+        session = result.session
+        let row = buffer.lineIndex(of: vim.cursor)
+        var lines = row - top
+        var requested = false
+        for case .scroll(let request) in result.effects {
+            requested = true
+            switch request {
+            case .top(let target): lines = target - top
+            case .center(let target): lines = target - page / 2 - top
+            case .bottom(let target): lines = target - (page - 1) - top
+            }
+        }
+        if requested || lines == 0 {
+            scroll(lines: lines)
+        } else if row == 0 {
+            scroll(toY: 0)
+        } else if row == rows - 1 {
+            scroll(toY: .greatestFiniteMagnitude)
+        } else {
+            scroll(lines: lines)
         }
     }
 

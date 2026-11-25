@@ -16,12 +16,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var didLaunch = false
     private var startupFailed = false
     private var pendingOpenURLs: [URL] = []
+    /// The Vim state every window shares: registers, options, searches and histories.
+    let vimSession = VimSessionStore()
+    private var rcErrors: [String] = []
 
-    init(recoveryURL: URL) {
+    /// `rcURL` is the `amberrc` file of `:set` lines; a missing file is fine, and a bad line
+    /// is reported in the first window's status line without stopping the launch.
+    init(recoveryURL: URL, rcURL: URL? = nil) {
         legacyRecoveryURL = recoveryURL
         recentFiles = RecentFiles.load(
             from: recoveryURL.deletingLastPathComponent().appendingPathComponent("Recent.json")
         )
+        super.init()
+        if let rcURL { loadRC(from: rcURL) }
+    }
+
+    private func loadRC(from url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            let loaded = VimOptions.load(rc: try String(contentsOf: url, encoding: .utf8))
+            vimSession.session.options = loaded.options
+            rcErrors = loaded.errors.map { "amberrc \($0)" }
+        } catch {
+            rcErrors = ["amberrc: \(error.localizedDescription)"]
+        }
     }
 
     private var activeEditor: EditorWindow? {
@@ -50,6 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// Restores every window open at quit. With none, reopens the most recent file that
     /// still exists, unless the launch is already opening files from Finder.
     func restoreWindows(reopeningRecent: Bool = true) throws {
+        try openInitialWindows(reopeningRecent: reopeningRecent)
+        if !rcErrors.isEmpty { editors.last?.showCommandMessage(rcErrors.joined(separator: "; ")) }
+    }
+
+    private func openInitialWindows(reopeningRecent: Bool) throws {
         for url in try recoveryFiles() { try createWindow(recoveryURL: url) }
         guard editors.isEmpty else { return }
         let fileManager = FileManager.default
@@ -129,12 +152,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         let recovery = recoveryURL ?? recoveryDirectory
             .appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
-        let editor = try EditorWindow(recoveryURL: recovery)
+        let editor = try EditorWindow(recoveryURL: recovery, vimSession: vimSession)
         editor.canUseFile = { [weak self] editor, url in
             try self?.owner(of: url, excluding: editor) == nil
         }
         editor.onCommand = { [weak self] editor, command in
-            self?.execute(command, in: editor)
+            self?.execute(command, in: editor) ?? false
         }
         editor.onFileUsed = { [weak self] editor, url in self?.recordRecent(url, from: editor) }
         editor.recentFiles = { [weak self] in self?.recentFiles.urls ?? [] }
@@ -167,37 +190,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return nil
     }
 
-    func execute(_ input: String, in editor: EditorWindow) {
+    /// Runs one ex command line for `editor`; false if it failed, which ends a macro.
+    @discardableResult
+    func execute(_ input: String, in editor: EditorWindow) -> Bool {
         do {
-            let command: VimCommand
             switch try ExCommand.parse(input) {
-            case .file(let file): command = file
-            case .markdown: return editor.toggleMarkdown()
-            case .checkTime: return editors.forEach { $0.checkDisk() }
-            case .set, .text:
-                let body = input.trimmingCharacters(in: .whitespacesAndNewlines)
-                let typed = body.hasPrefix(":") ? String(body.dropFirst()) : body
-                return editor.showCommandMessage("E492: Not an editor command: " + typed)
+            case .file(let file): return run(file, in: editor)
+            case .markdown: editor.toggleMarkdown()
+            case .checkTime: editors.forEach { $0.checkDisk() }
+            case .set(let arguments): return applySet(arguments, in: editor)
+            case let .text(range, command):
+                return editor.terminal.textView.runTextCommand(range: range, command: command)
             }
-            switch command {
-            case let .write(path, force, quit):
-                if editor.write(path: path, force: force), quit { editor.close() }
-            case let .writeAll(force, quit):
-                for candidate in editors where candidate.hasUnsavedChanges {
-                    candidate.show()
-                    guard candidate.write(force: force) else { return }
-                }
-                if quit { closeAll(force: false, reportingTo: editor) }
-                else { editor.show(); editor.showCommandMessage("All windows saved") }
-            case let .quit(all, force):
-                if all { closeAll(force: force, reportingTo: editor) }
-                else { editor.close(force: force) }
-            case .exit:
-                if !editor.hasUnsavedChanges || editor.write() { editor.close() }
-            case let .edit(path, force): editor.edit(path: path, force: force)
-            case .newWindow: try createWindow()
+            return true
+        } catch {
+            editor.showCommandMessage(error.localizedDescription)
+            return false
+        }
+    }
+
+    private func applySet(_ arguments: String, in editor: EditorWindow) -> Bool {
+        defer { editors.forEach { $0.terminal.textView.refreshHighlight() } }
+        do {
+            if let message = try vimSession.session.options.set(arguments) {
+                editor.showCommandMessage(message)
             }
-        } catch { editor.showCommandMessage(error.localizedDescription) }
+            return true
+        } catch {
+            editor.showCommandMessage(error.localizedDescription)
+            return false
+        }
+    }
+
+    private func run(_ command: VimCommand, in editor: EditorWindow) -> Bool {
+        switch command {
+        case let .write(path, force, quit):
+            guard editor.write(path: path, force: force) else { return false }
+            if quit { editor.close() }
+        case let .writeAll(force, quit):
+            for candidate in editors where candidate.hasUnsavedChanges {
+                candidate.show()
+                guard candidate.write(force: force) else { return false }
+            }
+            if quit { closeAll(force: false, reportingTo: editor) }
+            else { editor.show(); editor.showCommandMessage("All windows saved") }
+        case let .quit(all, force):
+            if all { closeAll(force: force, reportingTo: editor) }
+            else { editor.close(force: force) }
+        case .exit:
+            if !editor.hasUnsavedChanges || editor.write() { editor.close() }
+        case let .edit(path, force): editor.edit(path: path, force: force)
+        case .newWindow:
+            do { try createWindow() } catch {
+                editor.showCommandMessage(error.localizedDescription)
+                return false
+            }
+        }
+        return true
     }
 
     private func closeAll(force: Bool, reportingTo editor: EditorWindow) {

@@ -26,8 +26,8 @@ final class CommandBarTests: XCTestCase {
             let (terminal, window) = editorWindow()
             defer { window.contentView = nil }
             terminal.textView.string = "hello"
-            terminal.textView.setSelectedRange(NSRange(location: 5, length: 0))
             terminal.textView.setMode(.insert)
+            terminal.textView.setSelectedRange(NSRange(location: 5, length: 0))
 
             terminal.textView.keyDown(with: key(":"))
 
@@ -38,21 +38,19 @@ final class CommandBarTests: XCTestCase {
         }
     }
 
-    func test_colon_in_visual_mode_preserves_selection_without_command_entry() async {
+    func test_colon_in_visual_mode_opens_command_entry_prefilled_with_the_selection_range() async {
         await MainActor.run {
-            let view = TerminalTextView(frame: .zero)
-            view.string = "hello"
-            view.setSelectedRange(NSRange(location: 0, length: 0))
-            view.keyDown(with: key("v"))
-            var requests = 0
-            view.commandRequested = { requests += 1 }
+            let (terminal, window) = editorWindow()
+            defer { window.contentView = nil }
+            terminal.textView.string = "hello"
+            terminal.textView.setSelectedRange(NSRange(location: 0, length: 0))
+            terminal.textView.keyDown(with: key("v"))
 
-            view.keyDown(with: key(":"))
+            terminal.textView.keyDown(with: key(":"))
 
-            XCTAssertEqual(requests, 0)
-            XCTAssertEqual(view.string, "hello")
-            XCTAssertEqual(view.selectedRange(), NSRange(location: 0, length: 1))
-            XCTAssertEqual(view.mode, .visual)
+            XCTAssertEqual(terminal.commandLine.stringValue, ":'<,'>")
+            XCTAssertEqual(terminal.textView.string, "hello")
+            XCTAssertEqual(terminal.textView.mode, .normal)
         }
     }
 

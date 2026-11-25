@@ -399,6 +399,12 @@ final class ExRunnerTests: XCTestCase {
         XCTAssertEqual(Array(run.effects.suffix(2)), [.message("E16: Invalid range"), .failure])
     }
 
+    func test_global_stops_at_an_early_error_before_later_lines_would_change() {
+        let run = runWithEx("|y1\ny2\ny3", ":g/y/m-2<CR>")
+        XCTAssertEqual(run.text, "y1\ny2\ny3")
+        XCTAssertEqual(Array(run.effects.suffix(2)), [.message("E16: Invalid range"), .failure])
+    }
+
     func test_global_without_a_previous_pattern_fails() {
         assertFails(global, ":g//d<CR>", "E35: No previous regular expression")
     }

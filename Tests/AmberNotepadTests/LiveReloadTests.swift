@@ -58,7 +58,7 @@ final class LiveReloadTests: XCTestCase {
             editor.toggleMarkdown()
             XCTAssertEqual(editor.terminal.textView.string, "# New")
             let selection = editor.terminal.textView.selectedRange()
-            XCTAssertEqual(selection, NSRange(location: 5, length: 0))
+            XCTAssertEqual(selection, NSRange(location: 4, length: 0))
         }
     }
 
@@ -168,7 +168,9 @@ final class LiveReloadTests: XCTestCase {
             defer { cleanup(app, directory) }
             let editor = try app.createWindow(fileURL: file)
             let view = editor.terminal.textView
-            view.setSelectedRange(NSRange(location: (view.string as NSString).length, length: 0))
+            view.setSelectedRange(
+                NSRange(location: (view.string as NSString).length - 1, length: 0)
+            )
             view.scrollRangeToVisible(view.selectedRange())
 
             let grown = lines + (301...350).map { "line \($0)" }
@@ -176,7 +178,7 @@ final class LiveReloadTests: XCTestCase {
             editor.checkDisk()
 
             let lastLine = (view.string as NSString).range(of: "line 350")
-            XCTAssertEqual(view.selectedRange().location, NSMaxRange(lastLine))
+            XCTAssertEqual(view.selectedRange().location, NSMaxRange(lastLine) - 1)
             XCTAssertEqual(view.visibleRect.maxY, view.bounds.maxY)
         }
     }
@@ -210,7 +212,7 @@ final class LiveReloadTests: XCTestCase {
             let editor = try app.createWindow(fileURL: file)
             let view = editor.terminal.textView
             let end = (view.string as NSString).length
-            view.setSelectedRange(NSRange(location: end, length: 0))
+            view.setSelectedRange(NSRange(location: end - 1, length: 0))
             view.scrollRangeToVisible(NSRange(location: 0, length: 0))
             let top = view.visibleRect.minY
 
@@ -221,7 +223,7 @@ final class LiveReloadTests: XCTestCase {
             XCTAssertEqual(view.visibleRect.minY, top)
             XCTAssertLessThan(top, 100)
             let line300 = (view.string as NSString).range(of: "line 300\n")
-            XCTAssertEqual(view.selectedRange().location, line300.location + 8)
+            XCTAssertEqual(view.selectedRange().location, line300.location + 7)
         }
     }
 

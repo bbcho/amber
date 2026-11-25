@@ -35,7 +35,14 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     let position = NSTextField(labelWithString: "Ln 1   Col 1")
     let status = NSTextField(labelWithString: "Drafts save automatically")
     let commandLine = NSTextField()
+    /// A command line typed with no engine prompt behind it, such as the preview's `:`.
     var commandSubmitted: ((String) -> Void)?
+    /// Runs a command line for the engine, which has typed its keys; true if it succeeded.
+    var commandRun: ((String) -> Bool)?
+    private var prompt: Character = ":"
+    private var prefill = ""
+    private var historyIndex: Int?
+    private var historyDraft = ""
     /// Candidate full command lines for Tab completion of the typed command.
     var completeCommand: ((String) -> [String])?
     private var completions: [String] = []
@@ -95,19 +102,30 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         commandLine.setAccessibilityLabel("Vim command")
         screen.addSubview(commandLine)
         screen.addSubview(texture)
-        textView.commandRequested = { [weak self] in self?.beginCommand() }
+        textView.commandRequested = { [weak self] in
+            guard let self else { return }
+            self.beginCommand(prefill: self.textView.commandPrefill)
+        }
+        textView.searchRequested = { [weak self] prompt in self?.beginCommand(prompt: prompt) }
+        textView.exRequested = { [weak self] line in self?.commandRun?(line) ?? false }
     }
 
     required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
 
-    func beginCommand() {
-        commandLine.stringValue = ":"
+    /// Opens the footer for `:`, `/` or `?`. `prefill` is text the engine already holds, such
+    /// as `'<,'>` after `:` in Visual mode.
+    func beginCommand(prompt: Character = ":", prefill: String = "") {
+        self.prompt = prompt
+        self.prefill = prefill
+        historyIndex = nil
+        let opening = String(prompt) + prefill
+        commandLine.stringValue = opening
         status.isHidden = true
         commandLine.isHidden = false
         window?.makeFirstResponder(commandLine)
         if let editor = commandLine.currentEditor() as? NSTextView {
             editor.insertionPointColor = Phosphor.amber
-            editor.setSelectedRange(NSRange(location: 1, length: 0))
+            editor.setSelectedRange(NSRange(location: (opening as NSString).length, length: 0))
         }
     }
 
@@ -115,6 +133,17 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         _ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector
     ) -> Bool {
         guard control === commandLine, !commandLine.isHidden else { return false }
+        if commandSelector == #selector(NSResponder.moveUp(_:)) {
+            browseHistory(textView, step: -1)
+            return true
+        }
+        if commandSelector == #selector(NSResponder.moveDown(_:)) {
+            browseHistory(textView, step: 1)
+            return true
+        }
+        let isTab = commandSelector == #selector(NSResponder.insertTab(_:))
+            || commandSelector == #selector(NSResponder.insertBacktab(_:))
+        if isTab, prompt != ":" { return true }
         if commandSelector == #selector(NSResponder.insertTab(_:)) {
             completeCommandLine(textView, step: 1)
             return true
@@ -124,15 +153,54 @@ final class TerminalView: NSView, NSTextFieldDelegate {
             return true
         }
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            let typed = typedText(in: textView.string)
             endCommand()
+            if self.textView.hasOpenPrompt { self.textView.cancelPrompt(typed: typed ?? "") }
             return true
         }
         guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
-        let command = textView.string
-        endCommand()
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, trimmed != ":" { commandSubmitted?(command) }
+        submit(textView.string)
         return true
+    }
+
+    private func submit(_ command: String) {
+        let typed = typedText(in: command)
+        endCommand()
+        guard textView.hasOpenPrompt else {
+            let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, trimmed != ":" { commandSubmitted?(command) }
+            return
+        }
+        guard let typed, prompt != ":" || !(typed + prefill).isEmpty else {
+            textView.cancelPrompt(typed: "")
+            return
+        }
+        textView.store.remember(typed, prompt: prompt)
+        if prompt == ":" { textView.submitCommand(typed) }
+        else { textView.submitSearch(typed, forward: prompt == "/") }
+    }
+
+    /// What the user typed after the prompt and the engine's prefill; nil if they erased those.
+    private func typedText(in field: String) -> String? {
+        let opening = String(prompt) + prefill
+        guard field.hasPrefix(opening) else { return nil }
+        return String(field.dropFirst(opening.count))
+    }
+
+    /// Up and Down walk the history of this kind of prompt, keeping what was typed first.
+    private func browseHistory(_ editor: NSTextView, step: Int) {
+        let history = textView.store.history(for: prompt)
+        guard !history.isEmpty else { return }
+        if historyIndex == nil {
+            historyDraft = typedText(in: editor.string) ?? ""
+            historyIndex = history.count
+        }
+        let next = min(max((historyIndex ?? history.count) + step, 0), history.count)
+        historyIndex = next
+        let typed = next == history.count ? historyDraft : history[next]
+        editor.string = String(prompt) + prefill + typed
+        commandLine.stringValue = editor.string
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
     }
 
     func controlTextDidChange(_ notification: Notification) {
@@ -212,12 +280,12 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         let follows = position.line >= Self.lastTextLine(in: old)
             && (isShowingMarkdown || isSourceOffsetVisible(min(cursor, old.length)))
         let origin = scroll.contentView.bounds.origin
+        textView.resetForOutsideChange()
         let whole = NSRange(location: 0, length: old.length)
         guard textView.shouldChangeText(in: whole, replacementString: text) else { return }
         let replacement = NSAttributedString(string: text, attributes: textView.typingAttributes)
         textView.textStorage?.replaceCharacters(in: whole, with: replacement)
         textView.didChangeText()
-        if textView.mode == .visual { textView.setMode(.normal) }
         let line: Int
         if !follows { line = position.line }
         else if onEmptyFinalLine { line = Self.linePosition(of: new.length, in: new).line }

@@ -67,7 +67,8 @@ final class EditorTests: XCTestCase {
         await MainActor.run {
             _ = NSApplication.shared
             let lines = (1...100).map { "Line \($0)" }.joined(separator: "\n")
-            for text in ["", lines, lines + "\n"] {
+            let cases = [("", true), (lines, true), (lines + "\n", false)]
+            for (text, endsAtBottom) in cases {
                 let terminal = TerminalView(frame: NSRect(x: 0, y: 0, width: 1000, height: 720))
                 let window = NSWindow(contentRect: terminal.frame, styleMask: [.titled],
                                       backing: .buffered, defer: false)
@@ -78,9 +79,17 @@ final class EditorTests: XCTestCase {
                 view.setSelectedRange(NSRange(location: 0, length: 0))
                 view.keyDown(with: key("G"))
                 view.keyDown(with: key("j"))
-                let end = (text as NSString).length
-                XCTAssertEqual(view.selectedRange(), NSRange(location: end, length: 0))
-                XCTAssertEqual(view.visibleRect.maxY, view.bounds.maxY, "\(text.suffix(8))")
+                let lastLine = (text as NSString).range(of: "Line 100")
+                let expected = lastLine.location == NSNotFound ? 0 : lastLine.location
+                XCTAssertEqual(view.selectedRange(), NSRange(location: expected, length: 0))
+                var actual = NSRange()
+                let screenRect = view.firstRect(
+                    forCharacterRange: view.selectedRange(), actualRange: &actual
+                )
+                let caret = view.convert(window.convertFromScreen(screenRect), from: nil)
+                XCTAssertTrue(view.visibleRect.contains(caret), "\(text.suffix(8)) hid the cursor")
+                XCTAssertEqual(view.visibleRect.maxY == view.bounds.maxY, endsAtBottom,
+                               "\(text.suffix(8))")
                 window.contentView = nil
             }
         }

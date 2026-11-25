@@ -1,39 +1,171 @@
 import AppKit
+import NotepadCore
 
+/// The editor's text view: a thin adapter between AppKit and `VimEngine`. It turns key events
+/// into `VimKey`s, applies the engine's edits through the text view's own change protocol so
+/// undo and autosave keep working, and treats selection changes it did not make as input.
 @MainActor
 final class TerminalTextView: NSTextView {
-    enum Mode: String { case normal = "NORMAL", insert = "INSERT", visual = "VISUAL" }
-    private(set) var mode: Mode = .normal
-    var vimEnabled = true { didSet { setMode(vimEnabled ? .normal : .insert) } }
-    var modeDidChange: (() -> Void)?
-    var commandRequested: (() -> Void)?
-    private var pending = ""
-    private var count = ""
-    private var register = ""
-    private var linewiseRegister = false
-    private var visualAnchor = 0
-    private var visualCursor = 0
+    enum Mode: String {
+        case normal = "NORMAL", insert = "INSERT", visual = "VISUAL", replace = "REPLACE"
+        case visualLine = "VISUAL LINE", visualBlock = "VISUAL BLOCK"
+    }
 
-    func setMode(_ mode: Mode) {
-        self.mode = mode
-        pending = ""
-        count = ""
-        // AppKit caches caret visibility; reapply selection after changing the Vim mode.
-        let selection = selectedRange()
-        setSelectedRange(NSRange(
-            location: selection.location, length: mode == .normal ? 0 : selection.length
-        ))
-        updateInsertionPointStateAndRestartTimer(true)
-        needsDisplay = true
+    private static let maximumReplayedKeys = 100_000
+    private static let maximumRecursion = 100
+
+    private(set) var mode: Mode = .normal
+    var vimEnabled = true { didSet { vimToggled() } }
+    var modeDidChange: (() -> Void)?
+    /// `:` opened the command line; `commandPrefill` is what the engine typed after it.
+    var commandRequested: (() -> Void)?
+    /// `/` or `?` opened the command line.
+    var searchRequested: ((Character) -> Void)?
+    /// Runs an ex command line for the engine and says whether it succeeded.
+    var exRequested: ((String) -> Bool)?
+    var statusMessage: ((String) -> Void)?
+    var store = VimSessionStore()
+
+    var vim = VimWindowState()
+    var cachedBuffer: VimBuffer?
+    var highlightPattern: String?
+    private let vimUndo = UndoManager()
+    private var undoGroupOpen = false
+    private var implicitUndoGroup = false
+    private var scopeDepth = 0
+    private var replayedKeys = 0
+    private var lineMarks: ExLineMarks?
+    var applyingState = false
+    var typingNatively = false
+    var mouseClick: (offset: Int, count: Int)?
+
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        observeTextStorage()
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        observeTextStorage()
+    }
+
+    required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    private func observeTextStorage() {
+        vimUndo.groupsByEvent = false
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(textStorageChanged),
+            name: NSTextStorage.didProcessEditingNotification, object: textStorage
+        )
+    }
+
+    @objc private func textStorageChanged() { cachedBuffer = nil }
+
+    var isInserting: Bool { vim.mode == .insert || vim.mode == .replace }
+
+    /// The buffer of the text on screen, rebuilt only after the text changed.
+    func currentBuffer() -> VimBuffer {
+        if let cachedBuffer { return cachedBuffer }
+        let buffer = VimBuffer(NSString(string: string))
+        cachedBuffer = buffer
+        return buffer
+    }
+
+    /// The editor's own undo manager, so Vim's undo groups never meet the footer field's.
+    override var undoManager: UndoManager? { vimUndo }
+
+    // MARK: Modes
+
+    func setMode(_ newMode: Mode) {
+        endUndoGroup()
+        let buffer = currentBuffer()
+        let location = min(selectedRange().location, buffer.length)
+        clearPendingCommand()
+        vim.insertSession = nil
+        vim.changeInProgress = nil
+        vim.visualAnchor = nil
+        vim.desiredColumn = nil
+        vim.cursor = location
+        vim.mode = VimMode(newMode)
+        switch newMode {
+        case .normal: vim.cursor = buffer.restingOffset(location)
+        case .insert, .replace: vim.insertSession = InsertSession(start: location)
+        case .visual, .visualLine, .visualBlock: vim.visualAnchor = location
+        }
+        if isInserting { beginUndoGroup() }
+        if !newMode.isVisual { showSelection([NSRange(location: vim.cursor, length: 0)]) }
+        syncMode()
+    }
+
+    func clearPendingCommand() {
+        vim.pendingKeys = []
+        vim.count = nil
+        vim.leadingCount = nil
+        vim.register = nil
+        vim.operatorKeys = []
+    }
+
+    /// A reload or other outside change leaves any command, Visual selection or insert.
+    func resetForOutsideChange() {
+        guard vimEnabled else { return }
+        setMode(.normal)
+    }
+
+    private func vimToggled() {
+        endUndoGroup()
+        vimUndo.groupsByEvent = !vimEnabled
+        setMode(vimEnabled ? .normal : .insert)
+    }
+
+    func syncMode() {
+        let newMode = vimEnabled ? Mode(vim.mode) : .insert
+        let changed = newMode != mode
+        mode = newMode
+        if changed {
+            updateInsertionPointStateAndRestartTimer(true)
+            needsDisplay = true
+        }
         modeDidChange?()
     }
+
+    /// What the status line shows after the mode: a recording, and the keys typed so far.
+    var statusDetail: String {
+        var parts: [String] = []
+        if let recording = store.session.recording {
+            parts.append("recording @\(recording.register)")
+        }
+        let typed = pendingDescription
+        if !typed.isEmpty { parts.append(typed) }
+        return parts.joined(separator: "  ")
+    }
+
+    private var pendingDescription: String {
+        guard store.session.options.showcmd else { return "" }
+        let keys = (vim.operatorKeys + vim.pendingKeys).map(\.notation).joined()
+        return [vim.leadingCount.map(String.init), vim.register.map { "\"\($0)" },
+                vim.count.map(String.init), keys.isEmpty ? nil : keys]
+            .compactMap { $0 }.joined()
+    }
+
+    /// What the engine typed after `:`, such as `'<,'>` in Visual mode.
+    var commandPrefill: String {
+        guard vim.pendingKeys.first == VimKey(.character(":")) else { return "" }
+        return String(vim.pendingKeys.dropFirst().compactMap(\.baseCharacter))
+    }
+
+    var hasOpenPrompt: Bool {
+        guard let first = vim.pendingKeys.first?.baseCharacter else { return false }
+        return "/?:".contains(first)
+    }
+
+    // MARK: Drawing
 
     override var shouldDrawInsertionPoint: Bool { !vimEnabled || mode == .insert }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        guard vimEnabled, mode == .normal, window?.firstResponder === self,
-              let window else { return }
+        guard vimEnabled, mode != .insert, selectedRange().length == 0,
+              window?.firstResponder === self, let window else { return }
         var actual = NSRange()
         let rect = firstRect(forCharacterRange: selectedRange(), actualRange: &actual)
         var caret = convert(window.convertFromScreen(rect), from: nil)
@@ -44,327 +176,368 @@ final class TerminalTextView: NSTextView {
 
     override func paste(_ sender: Any?) { pasteAsPlainText(sender) }
 
+    // MARK: Keys
+
     override func keyDown(with event: NSEvent) {
-        let key = event.charactersIgnoringModifiers ?? ""
-        let control = event.modifierFlags.contains(.control)
-        if vimEnabled, event.keyCode == 53 || key == "\u{1b}" || (control && key == "[") {
-            setMode(.normal)
-            return
-        }
-        if !vimEnabled || event.modifierFlags.contains(.command)
-            || event.modifierFlags.contains(.option) {
+        guard vimEnabled else { return super.keyDown(with: event) }
+        switch event.vimInput {
+        case .shortcut:
             super.keyDown(with: event)
-            return
-        }
-        guard mode != .insert else { super.keyDown(with: event); return }
-        if mode == .normal, key == ":", !control {
-            pending = ""
-            count = ""
-            commandRequested?()
-            return
-        }
-        if control {
-            switch key {
-            case "r": undoManager?.redo()
-            case "d": scrollPageDown(nil)
-            case "u": scrollPageUp(nil)
-            default: break
-            }
-            return
-        }
-        if key.count == 1, key.first?.isNumber == true, key != "0" || !count.isEmpty {
-            if count.count < 4 { count += key }
-            return
-        }
-        let repetitions = min(Int(count) ?? 1, 999)
-        if !pending.isEmpty {
-            let first = pending
-            pending = ""
-            count = ""
-            if first == "g", key == "g" { moveToBeginningOfDocument(nil) }
-            if first == "d", key == "d" { deleteLines(repetitions) }
-            if first == "y", key == "y" { yankLines(repetitions) }
-            if first == "c", key == "c" {
-                moveToBeginningOfParagraph(nil)
-                operate("c", motion: "$", count: repetitions)
-            }
-            if isMotion(key) { operate(first, motion: key, count: repetitions) }
-            return
-        }
-        if ["g", "d", "y", "c"].contains(key) {
-            if mode == .visual, key != "g" {
-                yankSelection()
-                if key != "y" { insertText("", replacementRange: selectedRange()) }
-                setMode(key == "c" ? .insert : .normal)
-            } else { pending = key }
-            return
-        }
-        count = ""
-        if isMotion(key) {
-            move(key, count: repetitions)
-            return
-        }
-        switch key {
-        case "i": setMode(.insert)
-        case "a": moveRight(nil); setMode(.insert)
-        case "I": moveToBeginningOfLine(nil); setMode(.insert)
-        case "A": moveToEndOfLine(nil); setMode(.insert)
-        case "o":
-            moveToEndOfParagraph(nil)
-            insertText("\n", replacementRange: selectedRange())
-            setMode(.insert)
-        case "O":
-            moveToBeginningOfParagraph(nil)
-            let start = selectedRange().location
-            insertText("\n", replacementRange: selectedRange())
-            setSelectedRange(NSRange(location: start, length: 0))
-            setMode(.insert)
-        case "x":
-            if mode == .visual {
-                yankSelection()
-                insertText("", replacementRange: selectedRange())
-                setMode(.normal)
+        case .optionChord, .unmapped:
+            if isInserting { super.keyDown(with: event) }
+        case .key(let key):
+            if isInserting && (hasMarkedText() || !engineOwnsInsertKey(key)) {
+                super.keyDown(with: event)
             } else {
-                for _ in 0..<repetitions { deleteCharacter() }
+                feed([key])
             }
-        case "D", "C":
-            if mode == .visual {
-                replaceSelectedLines(keepingEmptyLine: key == "C")
-            } else {
-                deleteToLineEnd(count: repetitions)
-            }
-            setMode(key == "C" ? .insert : .normal)
-            if key == "D" { stepBackFromLineEnd() }
-        case "p", "P": pasteRegister(after: key == "p", count: repetitions)
-        case "u": undoManager?.undo()
-        case "v":
-            if mode == .visual { setMode(.normal) } else {
-                visualAnchor = selectedRange().location
-                visualCursor = visualAnchor
-                setMode(.visual)
-                selectVisualRange()
-            }
-        case "/": find(.showFindInterface)
-        case "n": find(.nextMatch)
-        case "N": find(.previousMatch)
-        default:
-            if [123, 124, 125, 126].contains(event.keyCode) { super.keyDown(with: event) }
         }
+    }
+
+    /// In Insert mode AppKit types text and moves the cursor; the engine takes the keys that
+    /// edit by Vim's rules, and every key in Replace mode, which AppKit cannot overwrite.
+    private func engineOwnsInsertKey(_ key: VimKey) -> Bool {
+        if vim.mode == .replace || !vim.pendingKeys.isEmpty { return true }
+        switch (key.base, key.control) {
+        case (.escape, _), (.enter, _), (.backspace, _), (.tab, false): return true
+        case (.character(let character), true): return "wurtdhjmci[".contains(character)
+        case (.character, false), (.tab, true), (.up, _), (.down, _), (.left, _), (.right, _),
+             (.home, _), (.end, _), (.pageUp, _), (.pageDown, _), (.delete, _):
+            return false
+        }
+    }
+
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        guard vimEnabled, isInserting else {
+            return super.insertText(string, replacementRange: replacementRange)
+        }
+        let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        typingNatively = true
+        super.insertText(string, replacementRange: replacementRange)
+        typingNatively = false
+        let result = VimEngine.recordTyped(text, window: vim, session: store.session)
+        vim = result.window
+        store.session = result.session
+        vim.cursor = selectedRange().location
+        syncMode()
+    }
+
+    // MARK: Feeding keys to the engine
+
+    /// Feeds typed keys to the engine, then the keys of any replay they start, marked as
+    /// replayed, until a replayed key fails or a limit passes. One call is one undo step.
+    func feed(_ keys: [VimKey]) {
+        withUndoGroup { _ = play(keys, replayed: false) }
+    }
+
+    private struct Queued {
+        var key: VimKey
+        var replayed: Bool
+        var level: Int
+    }
+
+    private func play(_ keys: [VimKey], replayed: Bool) -> Bool {
+        var stack = keys.reversed().map { Queued(key: $0, replayed: replayed, level: 0) }
+        var failed = false
+        var geometry: ScreenGeometry?
+        while let item = stack.popLast() {
+            if item.replayed, !countReplayedKey(item.level) {
+                failed = true
+                break
+            }
+            if !item.replayed, scopeDepth <= 1 { bringCursorIntoView() }
+            let buffer = currentBuffer()
+            let screen = geometry ?? screenGeometry(buffer)
+            geometry = screen
+            let result = VimEngine.handle(
+                item.key, window: vim, session: store.session, buffer: buffer, screen: screen,
+                clipboard: { NSPasteboard.general.string(forType: .string) },
+                replayed: item.replayed
+            )
+            let outcome = finish(result, replayed: item.replayed)
+            if outcome.changedView { geometry = nil }
+            if item.replayed && outcome.failed {
+                stack.removeAll { $0.replayed }
+                failed = true
+            }
+            stack.append(contentsOf: outcome.replay.reversed().map {
+                Queued(key: $0, replayed: true, level: item.level + 1)
+            })
+        }
+        return failed
+    }
+
+    private func countReplayedKey(_ level: Int) -> Bool {
+        replayedKeys += 1
+        guard replayedKeys <= Self.maximumReplayedKeys, level <= Self.maximumRecursion else {
+            statusMessage?("E223: Recursive mapping")
+            return false
+        }
+        return true
+    }
+
+    private struct Outcome {
+        var failed = false
+        var changedView = false
+        var replay: [VimKey] = []
+    }
+
+    private func finish(_ result: VimResult, replayed: Bool) -> Outcome {
+        var outcome = Outcome(changedView: !result.edits.isEmpty)
+        let recordingBefore = store.session.recording
+        let previous = (window: vim, session: store.session)
+        vim = result.window
+        store.session = result.session
+        guard applyEdits(result.edits) else {
+            (vim, store.session) = previous
+            showSelection([NSRange(location: vim.cursor, length: 0)])
+            syncMode()
+            statusMessage?("E21: Cannot make changes, 'modifiable' is off")
+            outcome.failed = true
+            return outcome
+        }
+        showSelection(result.selections)
+        if !result.edits.isEmpty { refreshHighlight() }
+        for effect in result.effects {
+            switch effect {
+            case .scroll(let request):
+                scroll(request)
+                outcome.changedView = true
+            case .openCommandLine(let prompt, _):
+                if !replayed { openCommandLine(prompt) }
+            case .undo(let count): undoSteps(count, redo: false)
+            case .redo(let count): undoSteps(count, redo: true)
+            case .replay(let keys): outcome.replay = keys
+            case .replayLines(let replay): runLines(replay)
+            case .message(let message): statusMessage?(message)
+            case .failure: outcome.failed = true
+            case .setClipboard(let text):
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            case .highlightSearch(let pattern): setHighlight(pattern)
+            case .ex(let line):
+                if exRequested?(line) == false { outcome.failed = true }
+            }
+        }
+        if isInserting { beginUndoGroup() }
+        revealCursor()
+        syncMode()
+        if recordingBefore != store.session.recording { modeDidChange?() }
+        return outcome
+    }
+
+    private func openCommandLine(_ prompt: Character) {
+        if prompt == ":" { commandRequested?() } else { searchRequested?(prompt) }
+    }
+
+    // MARK: Applying results
+
+    /// Applies the edits in order; false if the view refused one, which leaves the rest
+    /// unapplied since their offsets assume the earlier edits.
+    private func applyEdits(_ edits: [TextEdit]) -> Bool {
+        guard !edits.isEmpty else { return true }
+        beginUndoGroup()
+        applyingState = true
+        defer { applyingState = false }
+        for edit in edits {
+            lineMarks?.update(after: edit, in: textStorage?.mutableString ?? NSMutableString())
+            guard shouldChangeText(in: edit.range, replacementString: edit.replacement) else {
+                return false
+            }
+            textStorage?.replaceCharacters(
+                in: edit.range,
+                with: NSAttributedString(string: edit.replacement, attributes: typingAttributes)
+            )
+            didChangeText()
+        }
+        return true
+    }
+
+    func showSelection(_ ranges: [NSRange]) {
+        applyingState = true
+        defer { applyingState = false }
+        let length = (string as NSString).length
+        let valid = ranges.map { range -> NSRange in
+            let location = min(range.location, length)
+            return NSRange(location: location, length: min(range.length, length - location))
+        }
+        setSelectedRanges(valid.map { NSValue(range: $0) }, affinity: .downstream,
+                          stillSelecting: false)
         needsDisplay = true
     }
 
-    private func operate(_ operation: String, motion: String, count: Int) {
-        guard ["d", "y", "c"].contains(operation) else { return }
-        let start = selectedRange().location
-        let actualMotion = operation == "c" && motion == "w" ? "e" : motion
-        if operation == "c", motion == "w" {
-            moveWord("e", advancing: false)
-            for _ in 1..<count { moveWord("e") }
+    // MARK: Undo
+
+    func beginUndoGroup() {
+        guard vimEnabled, !undoGroupOpen else { return }
+        breakUndoCoalescing()
+        vimUndo.beginUndoGrouping()
+        undoGroupOpen = true
+    }
+
+    func endUndoGroup() {
+        guard undoGroupOpen else { return }
+        breakUndoCoalescing()
+        vimUndo.endUndoGrouping()
+        undoGroupOpen = false
+    }
+
+    /// Runs `body` as one undo step: the group opens at the first edit, or is already open
+    /// for an insert, and closes when the outermost scope ends outside Insert mode.
+    @discardableResult
+    func withUndoGroup(_ body: () -> Void) -> Bool {
+        if scopeDepth == 0 { replayedKeys = 0 }
+        scopeDepth += 1
+        let allowed = scopeDepth <= Self.maximumRecursion
+        if allowed {
+            body()
         } else {
-            move(actualMotion, count: count)
+            statusMessage?("E223: Recursive mapping")
         }
-        var end = selectedRange().location
-        let text = string as NSString
-        if actualMotion == "e", end < text.length {
-            end = NSMaxRange(text.rangeOfComposedCharacterSequence(at: end))
-        }
-        let range = NSRange(location: min(start, end), length: abs(end - start))
-        register = text.substring(with: range)
-        linewiseRegister = false
-        if operation == "y" {
-            setSelectedRange(NSRange(location: start, length: 0))
-        } else {
-            insertText("", replacementRange: range)
-            if operation == "c" { setMode(.insert) }
+        scopeDepth -= 1
+        if scopeDepth == 0, !isInserting { endUndoGroup() }
+        return allowed
+    }
+
+    private func undoSteps(_ count: Int, redo: Bool) {
+        endUndoGroup()
+        for _ in 0..<count where redo ? vimUndo.canRedo : vimUndo.canUndo {
+            redo ? vimUndo.redo() : vimUndo.undo()
         }
     }
 
-    private func isMotion(_ key: String) -> Bool {
-        ["h", "j", "k", "l", "w", "b", "e", "0", "^", "$", "G"].contains(key)
+    @objc func undo(_ sender: Any?) { undoSteps(1, redo: false) }
+    @objc func redo(_ sender: Any?) { undoSteps(1, redo: true) }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(undo(_:)) { return vimUndo.canUndo }
+        if item.action == #selector(redo(_:)) { return vimUndo.canRedo }
+        return super.validateUserInterfaceItem(item)
     }
 
-    private func move(_ key: String, count: Int) {
-        if mode == .visual { setSelectedRange(NSRange(location: visualCursor, length: 0)) }
-        let origin = enclosingScrollView?.contentView.bounds.origin ?? .zero
-        for _ in 0..<count {
-            switch key {
-            case "h": moveLeft(nil)
-            case "l": moveRight(nil)
-            case "j": moveDown(nil)
-            case "k": moveUp(nil)
-            case "w", "b", "e": moveWord(key)
-            case "0", "^": moveToBeginningOfParagraph(nil)
-            case "$": moveToEndOfParagraph(nil)
-            case "G": moveToEndOfDocument(nil)
-            default: break
+    /// An edit AppKit makes outside Vim, such as a paste or the find bar's Replace, is its
+    /// own undo step.
+    override func shouldChangeText(in range: NSRange, replacementString: String?) -> Bool {
+        let opensGroup = vimEnabled && !undoGroupOpen && vimUndo.groupingLevel == 0
+        if opensGroup { vimUndo.beginUndoGrouping() }
+        let allowed = super.shouldChangeText(in: range, replacementString: replacementString)
+        if opensGroup && allowed {
+            implicitUndoGroup = true
+        } else if opensGroup {
+            vimUndo.endUndoGrouping()
+        }
+        return allowed
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        if implicitUndoGroup {
+            implicitUndoGroup = false
+            breakUndoCoalescing()
+            vimUndo.endUndoGrouping()
+        }
+    }
+
+    // MARK: Ex commands
+
+    /// Runs a text ex command on this window as one undo step; false if it failed.
+    func runTextCommand(range: ExRange?, command: ExTextCommand) -> Bool {
+        var failed = false
+        let ran = withUndoGroup {
+            let result = ExRunner.run(
+                command, range: range, window: vim, session: store.session,
+                text: currentBuffer().text,
+                clipboard: { NSPasteboard.general.string(forType: .string) }
+            )
+            failed = finish(result, replayed: false).failed
+        }
+        return ran && !failed
+    }
+
+    /// Plays `:normal` on its lines as `LineReplay` describes.
+    private func runLines(_ replay: LineReplay) {
+        switch replay.lines {
+        case .cursor:
+            replayOnce(replay.keys)
+        case .numbers(let lines):
+            for line in lines {
+                let buffer = currentBuffer()
+                vim.cursor = buffer.lineRange(at: min(line, buffer.lineCount - 1)).location
+                replayOnce(replay.keys)
             }
-        }
-        if mode == .visual {
-            visualCursor = selectedRange().location
-            selectVisualRange()
-        }
-        // AppKit recenters the view when a motion leaves the screen; Vim scrolls only as far
-        // as needed, so undo AppKit's scroll and reveal the cursor line minimally.
-        if let clip = enclosingScrollView?.contentView {
-            clip.scroll(to: origin)
-            scrollToVisible(cursorLineRect().insetBy(dx: 0, dy: -textContainerInset.height))
-        }
-        needsDisplay = true
-    }
-
-    private func cursorLineRect() -> NSRect {
-        guard let layoutManager, let textContainer else { return .zero }
-        layoutManager.ensureLayout(for: textContainer)
-        let location = mode == .visual ? visualCursor : selectedRange().location
-        let glyph = layoutManager.glyphIndexForCharacter(at: location)
-        let glyphCount = layoutManager.numberOfGlyphs
-        let rect: NSRect
-        if glyph < glyphCount {
-            rect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-        } else if glyphCount == 0 || !layoutManager.extraLineFragmentRect.isEmpty {
-            rect = layoutManager.extraLineFragmentRect
-        } else {
-            rect = layoutManager.lineFragmentRect(forGlyphAt: glyphCount - 1, effectiveRange: nil)
-        }
-        return rect.offsetBy(dx: 0, dy: textContainerOrigin.y)
-    }
-
-    private func moveWord(_ key: String, advancing: Bool = true) {
-        let characters = Array(string)
-        let prefix = (string as NSString).substring(to: selectedRange().location)
-        var index = prefix.count
-        func kind(_ character: Character) -> Int {
-            if character.isWhitespace { return 0 }
-            return character.isLetter || character.isNumber || character == "_" ? 1 : 2
-        }
-        if key == "b" {
-            guard index > 0 else { return }
-            index -= 1
-            while index > 0, kind(characters[index]) == 0 { index -= 1 }
-            let group = kind(characters[index])
-            while index > 0, kind(characters[index - 1]) == group { index -= 1 }
-        } else if key == "e", index < characters.count {
-            if advancing { index = min(index + 1, characters.count - 1) }
-            while index < characters.count - 1, kind(characters[index]) == 0 { index += 1 }
-            let group = kind(characters[index])
-            while index < characters.count - 1, kind(characters[index + 1]) == group { index += 1 }
-        } else if index < characters.count {
-            let group = kind(characters[index])
-            while index < characters.count, kind(characters[index]) == group { index += 1 }
-            while index < characters.count, kind(characters[index]) == 0 { index += 1 }
-        }
-        let offset = String(characters.prefix(index)).utf16.count
-        setSelectedRange(NSRange(location: offset, length: 0))
-    }
-
-    private func lineRange(_ count: Int) -> NSRange {
-        let text = string as NSString
-        var range = text.lineRange(for: selectedRange())
-        for _ in 1..<count where NSMaxRange(range) < text.length {
-            let next = text.lineRange(for: NSRange(location: NSMaxRange(range), length: 0))
-            range.length = NSMaxRange(next) - range.location
-        }
-        return range
-    }
-
-    private func yankLines(_ count: Int) {
-        register = (string as NSString).substring(with: lineRange(count))
-        linewiseRegister = true
-    }
-
-    private func deleteLines(_ count: Int) {
-        let range = lineRange(count)
-        yankLines(count)
-        insertText("", replacementRange: range)
-    }
-
-    private func deleteToLineEnd(count: Int) {
-        let text = string as NSString
-        let start = selectedRange().location
-        var lastLine = text.lineRange(for: NSRange(location: start, length: 0))
-        for _ in 1..<count where NSMaxRange(lastLine) < text.length {
-            lastLine = text.lineRange(for: NSRange(location: NSMaxRange(lastLine), length: 0))
-        }
-        var contentsEnd = 0
-        text.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: lastLine)
-        guard contentsEnd > start else { return }
-        let range = NSRange(location: start, length: contentsEnd - start)
-        register = text.substring(with: range)
-        linewiseRegister = false
-        insertText("", replacementRange: range)
-    }
-
-    private func replaceSelectedLines(keepingEmptyLine: Bool) {
-        let text = string as NSString
-        let lines = text.lineRange(for: selectedRange())
-        register = text.substring(with: lines)
-        linewiseRegister = true
-        var contentsEnd = 0
-        text.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: lines)
-        let lineBreak = text.substring(
-            with: NSRange(location: contentsEnd, length: NSMaxRange(lines) - contentsEnd)
-        )
-        insertText(keepingEmptyLine ? lineBreak : "", replacementRange: lines)
-        setSelectedRange(NSRange(location: lines.location, length: 0))
-    }
-
-    // Vim's Normal mode rests on a character, never on the line break, so p pastes in place.
-    private func stepBackFromLineEnd() {
-        let text = string as NSString
-        let offset = selectedRange().location
-        let line = text.lineRange(for: NSRange(location: offset, length: 0))
-        var contentsEnd = 0
-        text.getLineStart(nil, end: nil, contentsEnd: &contentsEnd, for: line)
-        guard offset == contentsEnd, offset > line.location else { return }
-        let previous = text.rangeOfComposedCharacterSequence(at: offset - 1)
-        setSelectedRange(NSRange(location: previous.location, length: 0))
-    }
-
-    private func deleteCharacter() {
-        let text = string as NSString
-        let offset = selectedRange().location
-        guard offset < text.length else { return }
-        let range = text.rangeOfComposedCharacterSequence(at: offset)
-        register = text.substring(with: range)
-        linewiseRegister = false
-        insertText("", replacementRange: range)
-    }
-
-    private func yankSelection() {
-        register = (string as NSString).substring(with: selectedRange())
-        linewiseRegister = false
-    }
-
-    private func pasteRegister(after: Bool, count: Int) {
-        guard !register.isEmpty else { return }
-        let text = string as NSString
-        var offset = selectedRange().location
-        var value = String(repeating: register, count: count)
-        if linewiseRegister {
-            let line = text.lineRange(for: NSRange(location: offset, length: 0))
-            offset = after ? NSMaxRange(line) : line.location
-            if after, offset == text.length, !string.isEmpty, !string.hasSuffix("\n") {
-                value = "\n" + value
+        case .marked(let lines):
+            lineMarks = ExLineMarks(lines: lines, in: currentBuffer())
+            while let offset = lineMarks?.next() {
+                vim.cursor = offset
+                replayOnce(replay.keys)
             }
-            if !value.hasSuffix("\n") { value += "\n" }
-        } else if after, offset < text.length {
-            offset = NSMaxRange(text.rangeOfComposedCharacterSequence(at: offset))
+            lineMarks = nil
         }
-        insertText(value, replacementRange: NSRange(location: offset, length: 0))
-        setSelectedRange(NSRange(location: offset, length: 0))
     }
 
-    private func selectVisualRange() {
-        let text = string as NSString
-        let start = min(visualAnchor, visualCursor)
-        let end = max(visualAnchor, visualCursor)
-        let length = end < text.length ? text.rangeOfComposedCharacterSequence(at: end).length : 0
-        setSelectedRange(NSRange(location: start, length: end - start + length))
+    private func replayOnce(_ keys: [VimKey]) {
+        _ = play(keys, replayed: true)
+        let unfinished = !vim.pendingKeys.isEmpty || vim.mode == .insert
+            || vim.mode == .replace || vim.mode == .operatorPending
+        if unfinished { _ = play([VimKey(.escape)], replayed: true) }
     }
 
-    private func find(_ action: NSTextFinder.Action) {
-        let item = NSMenuItem()
-        item.tag = action.rawValue
-        performFindPanelAction(item)
+    // MARK: The footer prompts
+
+    /// Submits the text typed at the `:` prompt, after what the engine typed itself.
+    func submitCommand(_ typed: String) {
+        feed(typed.map { VimKey(.character($0)) } + [VimKey(.enter)])
+    }
+
+    /// Submits the text typed at the `/` or `?` prompt.
+    func submitSearch(_ pattern: String, forward: Bool) {
+        withUndoGroup {
+            let buffer = currentBuffer()
+            let result = VimEngine.search(
+                pattern, forward: forward, window: vim, session: store.session,
+                buffer: buffer, screen: screenGeometry(buffer)
+            )
+            _ = finish(result, replayed: false)
+        }
+    }
+
+    /// Closes a prompt without running it; macro recording keeps the keys typed.
+    func cancelPrompt(typed: String) {
+        feed(typed.map { VimKey(.character($0)) } + [VimKey(.escape)])
+    }
+}
+
+extension TerminalTextView.Mode {
+    init(_ mode: VimMode) {
+        switch mode {
+        case .normal, .operatorPending, .commandLine: self = .normal
+        case .insert: self = .insert
+        case .replace: self = .replace
+        case .visual: self = .visual
+        case .visualLine: self = .visualLine
+        case .visualBlock: self = .visualBlock
+        }
+    }
+
+    var isVisual: Bool { self == .visual || self == .visualLine || self == .visualBlock }
+}
+
+extension VimMode {
+    init(_ mode: TerminalTextView.Mode) {
+        switch mode {
+        case .normal: self = .normal
+        case .insert: self = .insert
+        case .replace: self = .replace
+        case .visual: self = .visual
+        case .visualLine: self = .visualLine
+        case .visualBlock: self = .visualBlock
+        }
+    }
+}
+
+extension VimKey {
+    var baseCharacter: Character? {
+        if case .character(let character) = base { return character }
+        return nil
     }
 }

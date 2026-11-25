@@ -13,7 +13,9 @@ enum AmberNotepad {
             for: .applicationSupportDirectory, in: .userDomainMask
         )[0]
         let recovery = support.appendingPathComponent("Amber Notepad/Recovery.json")
-        let delegate = AppDelegate(recoveryURL: recovery)
+        let rc = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/amber/amberrc")
+        let delegate = AppDelegate(recoveryURL: recovery, rcURL: rc)
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }
     }

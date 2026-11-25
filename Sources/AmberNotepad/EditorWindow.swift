@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     let window: NSWindow
     let terminal: TerminalView
+    let vimSession: VimSessionStore
     private let session: DocumentSession
     private var autosaveTimer: Timer?
     private var saveMessage = "Draft recovery is on"
@@ -16,7 +17,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     private var commandMessage: String?
     private var discardOnClose = false
     var onClose: ((EditorWindow) -> Void)?
-    var onCommand: ((EditorWindow, String) -> Void)?
+    var onCommand: ((EditorWindow, String) -> Bool)?
     /// Called whenever the window starts editing a different file on disk.
     var onFileUsed: ((EditorWindow, URL) -> Void)?
     var recentFiles: (() -> [URL])?
@@ -27,7 +28,8 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     var hasUnsavedChanges: Bool { session.isDirty }
     var isShowingMarkdown: Bool { terminal.isShowingMarkdown }
 
-    init(recoveryURL: URL) throws {
+    init(recoveryURL: URL, vimSession: VimSessionStore? = nil) throws {
+        self.vimSession = vimSession ?? VimSessionStore()
         let restoredSession = DocumentSession(recoveryURL: recoveryURL)
         try restoredSession.restore()
         session = restoredSession
@@ -50,8 +52,10 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         window.setFrameAutosaveName(
             "Amber-" + recoveryURL.deletingPathExtension().lastPathComponent
         )
+        terminal.textView.store = self.vimSession
         terminal.textView.delegate = self
         terminal.textView.modeDidChange = { [weak self] in self?.updateStatus() }
+        terminal.textView.statusMessage = { [weak self] in self?.showCommandMessage($0) }
         terminal.completeCommand = { [weak self] input in
             guard let self else { return [] }
             return PathCompletion.candidates(
@@ -64,7 +68,11 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         terminal.commandSubmitted = { [weak self] command in
             guard let self else { return }
             self.commandMessage = nil
-            self.onCommand?(self, command)
+            _ = self.onCommand?(self, command)
+        }
+        terminal.commandRun = { [weak self] command in
+            guard let self else { return false }
+            return self.onCommand?(self, command) ?? false
         }
         window.contentView = terminal
         window.center()
@@ -77,11 +85,13 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     /// Shows changes made to the file outside Amber, such as an agent's edits, like Vim's
     /// `autoread`: clean text reloads, and unsaved edits are never replaced.
     func checkDisk(waitForQuiet: Bool = false) {
+        if waitForQuiet, !vimSession.session.options.autoread { return }
         do {
             switch try session.checkDisk(waitForQuiet: waitForQuiet) {
             case .unchanged:
                 return
             case .reloaded:
+                terminal.textView.resetForOutsideChange()
                 let undo = terminal.textView.undoManager
                 terminal.textView.breakUndoCoalescing()
                 undo?.beginUndoGrouping()
@@ -306,21 +316,19 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         window.title = name + " — Amber"
         window.representedURL = session.url
         window.isDocumentEdited = session.isDirty
-        let text = terminal.textView.string as NSString
-        let offset = min(terminal.textView.selectedRange().location, text.length)
-        let prefix = text.substring(to: offset)
-        let lines = prefix.components(separatedBy: .newlines)
-        let line = prefix.reduce(1) { count, character in
-            character.isNewline ? count + 1 : count
-        }
-        let column = (lines.last?.count ?? 0) + 1
+        let (line, column) = terminal.textView.cursorPosition()
         terminal.position.stringValue = "Ln \(line)   Col \(column)"
-        var mode = terminal.textView.vimEnabled ? "[\(terminal.textView.mode.rawValue)]  " : ""
+        var mode = terminal.textView.vimEnabled ? vimStatus() : ""
         if terminal.isShowingMarkdown {
             terminal.position.stringValue = "Rendered"
             mode = "[RENDERED]  "
         }
         terminal.status.stringValue = mode + (commandMessage ?? saveMessage)
+    }
+
+    private func vimStatus() -> String {
+        let detail = terminal.textView.statusDetail
+        return "[\(terminal.textView.mode.rawValue)]  " + (detail.isEmpty ? "" : detail + "  ")
     }
 
     private func showDocument() {

@@ -145,4 +145,15 @@ final class VimBufferTests: XCTestCase {
         let classes = (0..<b.length).map { b.wordClass(at: $0, bigWord: false) }
         XCTAssertEqual(classes, [.word, .punctuation, .punctuation, .blank, .blank, .word])
     }
+
+    func test_the_resting_offset_in_normal_mode_is_never_the_line_break() {
+        let b = buffer("ab\n\ncd")
+        XCTAssertEqual([0, 1, 2, 3, 4, 6].map { b.restingOffset($0) }, [0, 1, 1, 3, 4, 5])
+    }
+
+    func test_the_cursor_lines_keep_scrolloff_from_the_edges_of_a_view_inside_the_text() {
+        let screen = ScreenGeometry.fake(lines: 10, top: 20, text: NSString(string:
+            String(repeating: "x\n", count: 100)))
+        XCTAssertEqual(screen.cursorLines(lineCount: 100, scrolloff: 3), 23...26)
+    }
 }

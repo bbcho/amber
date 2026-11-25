@@ -74,3 +74,19 @@ public struct ScreenGeometry {
         return starts[min(row * wrapWidth + column, starts.count - 1)]
     }
 }
+
+extension ScreenGeometry {
+    /// The lines the cursor may rest on while the view shows its visible lines, keeping
+    /// `scrolloff` lines from an edge unless the edge is an end of the text.
+    public func cursorLines(lineCount: Int, scrolloff: Int) -> ClosedRange<Int> {
+        Motions.cursorLines(top: firstVisibleLine, bottom: lastVisibleLine,
+                            lineCount: lineCount, scrolloff: scrolloff)
+    }
+}
+
+extension VimBuffer {
+    /// Where Normal mode may rest the cursor: on a character, never on the line break.
+    public func restingOffset(_ offset: Int) -> Int {
+        Motions.normalPosition(offset, in: self)
+    }
+}
