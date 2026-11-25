@@ -1,4 +1,5 @@
 import AppKit
+import NotepadCore
 
 @MainActor
 enum Phosphor {
@@ -7,6 +8,7 @@ enum Phosphor {
     static let screen = NSColor(srgbRed: 0.065, green: 0.039, blue: 0.012, alpha: 1)
     static let ink = NSColor(srgbRed: 0.20, green: 0.10, blue: 0.015, alpha: 1)
     static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    static let cellWidth = font.maximumAdvancement.width
 }
 
 @MainActor
@@ -47,6 +49,7 @@ final class TerminalView: NSView, NSTextFieldDelegate {
     var completeCommand: ((String) -> [String])?
     private var completions: [String] = []
     private var completionIndex = 0
+    let gutter = LineNumberGutter()
     let preview = MarkdownPreviewView()
     private(set) var isShowingMarkdown = false
     private var sourceSelection = NSRange(location: 0, length: 0)
@@ -79,6 +82,7 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         filename.setAccessibilityLabel("Document name")
         position.setAccessibilityLabel("Cursor position")
         configureEditor()
+        screen.addSubview(gutter)
         screen.addSubview(scroll)
         Self.configure(previewScroll)
         previewScroll.documentView = preview
@@ -107,10 +111,73 @@ final class TerminalView: NSView, NSTextFieldDelegate {
             self.beginCommand(prefill: self.textView.commandPrefill)
         }
         textView.searchRequested = { [weak self] prompt in self?.beginCommand(prompt: prompt) }
+        gutter.textView = textView
+        gutter.isHidden = true
+        textView.displayDidChange = { [weak self] in self?.refreshGutter() }
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification,
+            object: scroll.contentView
+        )
         textView.exRequested = { [weak self] line in self?.commandRun?(line) ?? false }
     }
 
     required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    private var showsGutter: Bool {
+        let options = textView.store.session.options
+        return (options.number || options.relativenumber) && !isShowingMarkdown
+    }
+
+    @objc private func scrolled() { refreshGutter() }
+
+    private func refreshGutter() {
+        guard showsGutter else { return }
+        gutter.needsDisplay = true
+        if gutter.preferredWidth != gutter.frame.width { needsLayout = true }
+    }
+
+    /// Makes the display options of the shared session show: line numbers, wrapping, tab
+    /// width, and the `list` and `cursorline` drawing. Called whenever the options change.
+    func applyDisplayOptions() {
+        let options = textView.store.session.options
+        applyWrap(options.wrap)
+        applyTabstop(options.tabstop)
+        gutter.isHidden = !showsGutter
+        textView.needsDisplay = true
+        gutter.needsDisplay = true
+        needsLayout = true
+    }
+
+    private func applyWrap(_ wraps: Bool) {
+        textView.isHorizontallyResizable = !wraps
+        textView.autoresizingMask = wraps ? [.width] : []
+        textView.textContainer?.widthTracksTextView = wraps
+        textView.textContainer?.size = NSSize(
+            width: wraps ? scroll.contentSize.width : 10_000_000,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        scroll.hasHorizontalScroller = !wraps
+    }
+
+    /// Sets the tab width of the text already in the editor and of the text typed next.
+    private func applyTabstop(_ tabstop: Int) {
+        let interval = Phosphor.cellWidth * CGFloat(tabstop)
+        let current = textView.defaultParagraphStyle?.defaultTabInterval
+        guard current != interval,
+              let paragraph = textView.defaultParagraphStyle?.mutableCopy()
+                as? NSMutableParagraphStyle else { return }
+        paragraph.tabStops = []
+        paragraph.defaultTabInterval = interval
+        textView.defaultParagraphStyle = paragraph
+        textView.typingAttributes[.paragraphStyle] = paragraph
+        guard let storage = textView.textStorage else { return }
+        storage.beginEditing()
+        storage.addAttribute(
+            .paragraphStyle, value: paragraph, range: NSRange(location: 0, length: storage.length)
+        )
+        storage.endEditing()
+    }
 
     /// Opens the footer for `:`, `/` or `?`. `prefill` is text the engine already holds, such
     /// as `'<,'>` after `:` in Visual mode.
@@ -258,6 +325,7 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         isShowingMarkdown = false
         previewScroll.isHidden = true
         scroll.isHidden = false
+        needsLayout = true
         window?.makeFirstResponder(textView)
         if textView.vimEnabled { textView.setMode(.normal) }
         let length = (textView.string as NSString).length
@@ -429,7 +497,8 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         textView.textContainer?.lineFragmentPadding = 0
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
-        paragraph.defaultTabInterval = Phosphor.font.maximumAdvancement.width * 4
+        paragraph.tabStops = []
+        paragraph.defaultTabInterval = Phosphor.cellWidth * 4
         let glow = NSShadow()
         glow.shadowColor = Phosphor.amber.withAlphaComponent(0.32)
         glow.shadowBlurRadius = 3
@@ -477,14 +546,24 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         position.frame = NSRect(
             x: size.width - 178, y: labelY, width: 170, height: labelHeight
         )
-        scroll.frame = NSRect(x: 0, y: 22, width: size.width, height: size.height - 50)
-        textView.minSize = NSSize(width: 0, height: scroll.contentSize.height)
+        let shelf = NSRect(x: 0, y: 22, width: size.width, height: size.height - 50)
+        let gutterWidth = showsGutter ? gutter.preferredWidth : 0
+        gutter.isHidden = !showsGutter
+        gutter.frame = NSRect(x: 0, y: shelf.minY, width: gutterWidth, height: shelf.height)
+        scroll.frame = NSRect(x: gutterWidth, y: shelf.minY,
+                              width: shelf.width - gutterWidth, height: shelf.height)
+        let wraps = textView.store.session.options.wrap
+        textView.minSize = NSSize(
+            width: wraps ? 0 : scroll.contentSize.width, height: scroll.contentSize.height
+        )
+        let width = wraps ? scroll.contentSize.width
+            : max(textView.frame.width, scroll.contentSize.width)
         textView.setFrameSize(NSSize(
-            width: scroll.contentSize.width,
+            width: width,
             height: max(textView.frame.height, scroll.contentSize.height)
         ))
         textView.sizeToFit()
-        previewScroll.frame = scroll.frame
+        previewScroll.frame = shelf
         preview.minSize = NSSize(width: 0, height: previewScroll.contentSize.height)
         preview.setFrameSize(NSSize(
             width: previewScroll.contentSize.width,
@@ -493,6 +572,6 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         preview.sizeToFit()
         status.frame = NSRect(x: 8, y: 4, width: size.width - 16, height: 15)
         commandLine.frame = status.frame
-        texture.frame = scroll.frame
+        texture.frame = shelf
     }
 }

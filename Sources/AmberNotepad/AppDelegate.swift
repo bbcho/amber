@@ -210,7 +210,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     private func applySet(_ arguments: String, in editor: EditorWindow) -> Bool {
-        defer { editors.forEach { $0.terminal.textView.refreshHighlight() } }
+        defer {
+            for editor in editors {
+                editor.terminal.textView.refreshHighlight()
+                editor.terminal.applyDisplayOptions()
+            }
+        }
         do {
             if let message = try vimSession.session.options.set(arguments) {
                 editor.showCommandMessage(message)

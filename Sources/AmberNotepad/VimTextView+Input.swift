@@ -17,6 +17,7 @@ extension TerminalTextView {
         _ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool
     ) {
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        defer { cursorDidMove() }
         guard vimEnabled, !applyingState, !stillSelecting, !hasMarkedText() else { return }
         adoptSelection(selectedRange())
     }

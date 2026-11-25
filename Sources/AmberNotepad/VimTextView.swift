@@ -24,6 +24,8 @@ final class TerminalTextView: NSTextView {
     /// Runs an ex command line for the engine and says whether it succeeded.
     var exRequested: ((String) -> Bool)?
     var statusMessage: ((String) -> Void)?
+    /// The text or the cursor changed, so the line numbers may need to follow.
+    var displayDidChange: (() -> Void)?
     var store = VimSessionStore()
 
     var vim = VimWindowState()
@@ -59,7 +61,10 @@ final class TerminalTextView: NSTextView {
         )
     }
 
-    @objc private func textStorageChanged() { cachedBuffer = nil }
+    @objc private func textStorageChanged() {
+        cachedBuffer = nil
+        displayDidChange?()
+    }
 
     var isInserting: Bool { vim.mode == .insert || vim.mode == .replace }
 
@@ -163,7 +168,9 @@ final class TerminalTextView: NSTextView {
     override var shouldDrawInsertionPoint: Bool { !vimEnabled || mode == .insert }
 
     override func draw(_ dirtyRect: NSRect) {
+        drawCursorLine()
         super.draw(dirtyRect)
+        drawListMarkers(in: dirtyRect)
         guard vimEnabled, mode != .insert, selectedRange().length == 0,
               window?.firstResponder === self, let window else { return }
         var actual = NSRange()

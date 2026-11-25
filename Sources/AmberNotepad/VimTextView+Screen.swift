@@ -97,7 +97,21 @@ extension TerminalTextView {
         clip.scroll(to: origin)
         let margin = textContainerInset.height
             + CGFloat(store.session.options.scrolloff) * linePitch
-        scrollToVisible(lineRect(at: vim.cursor).insetBy(dx: 0, dy: -margin))
+        var target = lineRect(at: vim.cursor)
+        if !store.session.options.wrap { target = narrowedToCursor(target) }
+        scrollToVisible(target.insetBy(dx: 0, dy: -margin))
+    }
+
+    /// Without wrapping a line is as wide as the text, so only the cursor's own cell must show.
+    private func narrowedToCursor(_ row: NSRect) -> NSRect {
+        let length = currentBuffer().length
+        guard let layoutManager, let textContainer, length > 0 else { return row }
+        let glyph = layoutManager.glyphIndexForCharacter(at: min(vim.cursor, length - 1))
+        let box = layoutManager.boundingRect(
+            forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer)
+        let width = max(box.width, Phosphor.cellWidth)
+        return NSRect(x: box.minX + textContainerOrigin.x, y: row.minY, width: width,
+                      height: row.height)
     }
 
     func lineRect(at offset: Int) -> NSRect {

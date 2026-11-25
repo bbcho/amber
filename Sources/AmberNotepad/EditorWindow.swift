@@ -53,6 +53,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
             "Amber-" + recoveryURL.deletingPathExtension().lastPathComponent
         )
         terminal.textView.store = self.vimSession
+        terminal.applyDisplayOptions()
         terminal.textView.delegate = self
         terminal.textView.modeDidChange = { [weak self] in self?.updateStatus() }
         terminal.textView.statusMessage = { [weak self] in self?.showCommandMessage($0) }
