@@ -53,6 +53,26 @@ final class VimSpeedTests: XCTestCase {
         }
     }
 
+    func test_a_global_normal_over_ten_thousand_lines_and_its_undo_each_take_under_5_seconds()
+        async throws {
+        try await MainActor.run {
+            let (app, directory, editor) = try workspace(megabyte)
+            defer { cleanup(app, directory) }
+            let view = editor.terminal.textView
+
+            let replay = time { submit(":g/foo/normal Ax", in: editor) }
+            report("SPEED :g/foo/normal Ax 10,000 lines: \(Int(replay * 1000)) ms")
+            let edited = view.string.components(separatedBy: "x\n").count - 1
+            XCTAssertEqual(edited, 10_000)
+            XCTAssertLessThan(replay, 5)
+
+            let undo = time { press(view, "u") }
+            report("SPEED undo of that replay: \(Int(undo * 1000)) ms")
+            XCTAssertEqual(view.string, megabyte)
+            XCTAssertLessThan(undo, 5)
+        }
+    }
+
     // MARK: Helpers
 
     private func report(_ line: String) {

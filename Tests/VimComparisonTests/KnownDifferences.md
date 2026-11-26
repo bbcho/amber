@@ -75,6 +75,10 @@ listed case that now matches, so the list cannot go stale.
 - Control-R inserts literally, without `autoindent` or `textwidth`. In Replace mode,
   multi-line register text overwrites only its first line.
 - Insert-mode arrows move the cursor natively and restart the insert session.
+- Replace mode through an input method inserts the composed text instead of overwriting.
+- After Undo from the Edit menu in Insert mode, each further typed character is its own undo
+  step until the next key the engine handles.
+- The Markdown preview's private session can stay recording after `qa`.
 - `@` in Visual mode replays with the selection still active; Visual `@:` and `:` fail.
 - Visual `r` over a tab does not split the tab.
 - A block put over lines with mixed line breaks gives them all the first line's break.
@@ -107,6 +111,10 @@ listed case that now matches, so the list cannot go stale.
 - `(` and `)` across 1 MB with no sentence end scan the whole text: 93 to 134 ms in a
   release build and 474 to 539 ms in a debug build. Text with ordinary sentences takes 3 ms.
 - A 1 MB document on one line takes minutes to lay out in AppKit.
+- `:g/foo/normal Ax` over 10,000 lines of a 1 MB, 20,000-line document takes about 4.3 s in a
+  window (debug build), and `u` of it 0.85 s, mostly AppKit's per-edit text storage and
+  selection work. Replays, macros and undo defer the display, status and autosave work to
+  their end.
 
 ## Corpus exceptions
 

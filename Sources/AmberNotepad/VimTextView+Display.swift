@@ -9,7 +9,7 @@ extension TerminalTextView {
     /// The cursor moved: the band and the relative numbers follow it.
     func cursorDidMove() {
         if store.session.options.cursorline { needsDisplay = true }
-        displayDidChange?()
+        if !isBatching { displayDidChange?() }
     }
 
     private var markerAttributes: [NSAttributedString.Key: Any] {

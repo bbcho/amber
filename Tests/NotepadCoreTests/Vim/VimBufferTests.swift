@@ -171,4 +171,54 @@ final class VimBufferTests: XCTestCase {
             String(repeating: "x\n", count: 100)))
         XCTAssertEqual(screen.cursorLines(lineCount: 100, scrolloff: 3), 23...26)
     }
+
+    // MARK: Applying an edit
+
+    private func assertSameLines(_ patched: VimBuffer, _ fresh: VimBuffer, _ message: String) {
+        XCTAssertEqual(patched.text, fresh.text, message)
+        XCTAssertEqual(patched.lineCount, fresh.lineCount, message)
+        for line in 0..<min(patched.lineCount, fresh.lineCount) {
+            XCTAssertEqual(patched.lineRange(at: line), fresh.lineRange(at: line), message)
+        }
+    }
+
+    func test_an_edit_that_joins_or_splits_a_crlf_gives_the_lines_of_the_new_text() {
+        let cases: [(String, NSRange, String)] = [
+            ("a\rb", NSRange(location: 2, length: 0), "\n"),
+            ("a\r\nb", NSRange(location: 2, length: 1), ""),
+            ("a\r\nb", NSRange(location: 1, length: 1), ""),
+            ("a\r\nb", NSRange(location: 1, length: 2), "\n"),
+            ("a\nb", NSRange(location: 1, length: 0), "\r"),
+            ("", NSRange(location: 0, length: 0), "x\ny"),
+            ("x\ny", NSRange(location: 0, length: 3), ""),
+            ("x\n", NSRange(location: 2, length: 0), "y"),
+        ]
+        for (text, range, replacement) in cases {
+            let patched = buffer(text).applying(TextEdit(range: range, replacement: replacement))
+            let expected = (text as NSString).replacingCharacters(in: range, with: replacement)
+            assertSameLines(patched, buffer(expected), "\(text.debugDescription) \(range)")
+        }
+    }
+
+    func test_random_edits_give_the_same_lines_as_building_the_buffer_again() {
+        let pieces = ["a", "bc", "\n", "\r", "\r\n", "\u{2028}", "\u{85}", " ", "é"]
+        var seed: UInt64 = 42
+        func next(_ bound: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(bound))
+        }
+        func random(_ count: Int) -> String {
+            (0..<count).map { _ in pieces[next(pieces.count)] }.joined()
+        }
+        for trial in 0..<1_500 {
+            let text = random(next(12))
+            let length = (text as NSString).length
+            let location = next(length + 1)
+            let range = NSRange(location: location, length: next(length - location + 1))
+            let replacement = random(next(4))
+            let patched = buffer(text).applying(TextEdit(range: range, replacement: replacement))
+            let expected = (text as NSString).replacingCharacters(in: range, with: replacement)
+            assertSameLines(patched, buffer(expected), "trial \(trial) \(text.debugDescription)")
+        }
+    }
 }

@@ -173,17 +173,23 @@ struct ExLines {
 /// replayed keys make, as Vim's line marks are. The adapter makes one from
 /// `LineReplay.Lines.marked`, puts the cursor at each `next()` offset in turn, and calls
 /// `update` with every edit before applying it.
+///
+/// Each mark is kept as its distance from the end of the text, so an edit moves only the
+/// marks it reaches or passes: those after it keep their distance.
 public struct ExLineMarks: Equatable {
-    /// The UTF-16 offsets where the remaining lines start, in order.
-    private var starts: [Int]
+    /// The distances of the remaining line starts from the end, nearest the end first, so
+    /// the next line to visit is last.
+    private var distances: [Int]
+    private var length: Int
 
     public init(lines: [Int], in buffer: VimBuffer) {
-        starts = lines.map { buffer.lineRange(at: $0).location }
+        length = buffer.length
+        distances = lines.reversed().map { buffer.length - buffer.lineRange(at: $0).location }
     }
 
     /// The start of the next line to visit, which is no longer marked.
     public mutating func next() -> Int? {
-        starts.isEmpty ? nil : starts.removeFirst()
+        distances.popLast().map { length - $0 }
     }
 
     /// Moves the marks past `edit`, which applies to `text`. A line goes when the edit
@@ -195,19 +201,30 @@ public struct ExLineMarks: Equatable {
         let inserted = (edit.replacement as NSString).length
         let endsWithBreak = inserted > 0
             && Self.isBreak((edit.replacement as NSString).character(at: inserted - 1))
-        starts = starts.compactMap { start -> Int? in
+        let newLength = length + inserted - (b - a)
+        var reached = distances.count
+        while reached > 0, length - distances[reached - 1] <= b { reached -= 1 }
+        let moved = distances[reached...].compactMap { distance -> Int? in
+            let start = length - distance
+            let newStart: Int
             if start < a || (start == a && b > a
                              && NSMaxRange(text.lineRange(for: NSRange(location: start,
                                                                        length: 0))) > b) {
-                return start
+                newStart = start
+            } else if start < b {
+                return nil
+            } else if a == b {
+                newStart = endsWithBreak ? start + inserted : start
+            } else {
+                let lineStart = inserted > 0 ? endsWithBreak
+                    : a == 0 || Self.isBreak(text.character(at: a - 1))
+                guard lineStart else { return nil }
+                newStart = a + inserted
             }
-            if start < b { return nil }
-            if start > b { return start + inserted - (b - a) }
-            if a == b { return endsWithBreak ? start + inserted : start }
-            let lineStart = inserted > 0 ? endsWithBreak
-                : a == 0 || Self.isBreak(text.character(at: a - 1))
-            return lineStart ? a + inserted : nil
+            return newLength - newStart
         }
+        distances.replaceSubrange(reached..., with: moved)
+        length = newLength
     }
 
     private static func isBreak(_ unit: unichar) -> Bool {

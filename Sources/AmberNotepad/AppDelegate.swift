@@ -200,7 +200,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             case .checkTime: editors.forEach { $0.checkDisk() }
             case .set(let arguments): return applySet(arguments, in: editor)
             case let .text(range, command):
-                return editor.terminal.textView.runTextCommand(range: range, command: command)
+                let succeeded = editor.terminal.textView.runTextCommand(
+                    range: range, command: command
+                )
+                editor.refreshMarkdown()
+                return succeeded
             }
             return true
         } catch {

@@ -17,8 +17,8 @@ final class TerminalTextView: NSTextView {
     private(set) var mode: Mode = .normal
     var vimEnabled = true { didSet { vimToggled() } }
     var modeDidChange: (() -> Void)?
-    /// `:` opened the command line; `commandPrefill` is what the engine typed after it.
-    var commandRequested: (() -> Void)?
+    /// `:` opened the command line with what the engine typed after it, such as `'<,'>`.
+    var commandRequested: ((String) -> Void)?
     /// `/` or `?` opened the command line.
     var searchRequested: ((Character) -> Void)?
     /// Runs an ex command line for the engine and says whether it succeeded.
@@ -26,6 +26,9 @@ final class TerminalTextView: NSTextView {
     var statusMessage: ((String) -> Void)?
     /// The text or the cursor changed, so the line numbers may need to follow.
     var displayDidChange: (() -> Void)?
+    /// The text changed during a replay or undo; sent once when it ends, in place of the
+    /// text view delegate's `textDidChange` for each edit.
+    var batchChangedText: (() -> Void)?
     var store = VimSessionStore()
 
     var vim = VimWindowState()
@@ -37,6 +40,9 @@ final class TerminalTextView: NSTextView {
     private var scopeDepth = 0
     private var replayedKeys = 0
     private var lineMarks: ExLineMarks?
+    private var batchDepth = 0
+    private var batchChanged = false
+    var batchMovedSelection = false
     var applyingState = false
     var typingNatively = false
     var mouseClick: (offset: Int, count: Int)?
@@ -63,7 +69,26 @@ final class TerminalTextView: NSTextView {
 
     @objc private func textStorageChanged() {
         cachedBuffer = nil
+        if isBatching { batchChanged = true } else { displayDidChange?() }
+    }
+
+    /// True while a replay or an undo runs many edits: the per-edit display, status and
+    /// autosave work waits for `endBatch`, which does it once.
+    var isBatching: Bool { batchDepth > 0 }
+
+    private func beginBatch() { batchDepth += 1 }
+
+    private func endBatch() {
+        batchDepth -= 1
+        guard batchDepth == 0 else { return }
+        revealCursor()
         displayDidChange?()
+        if batchChanged {
+            batchChanged = false
+            refreshHighlight()
+            batchChangedText?()
+        }
+        modeDidChange?()
     }
 
     var isInserting: Bool { vim.mode == .insert || vim.mode == .replace }
@@ -150,12 +175,6 @@ final class TerminalTextView: NSTextView {
         return [vim.leadingCount.map(String.init), vim.register.map { "\"\($0)" },
                 vim.count.map(String.init), keys.isEmpty ? nil : keys]
             .compactMap { $0 }.joined()
-    }
-
-    /// What the engine typed after `:`, such as `'<,'>` in Visual mode.
-    var commandPrefill: String {
-        guard vim.pendingKeys.first == VimKey(.character(":")) else { return "" }
-        return String(vim.pendingKeys.dropFirst().compactMap(\.baseCharacter))
     }
 
     var hasOpenPrompt: Bool {
@@ -247,7 +266,13 @@ final class TerminalTextView: NSTextView {
         var stack = keys.reversed().map { Queued(key: $0, replayed: replayed, level: 0) }
         var failed = false
         var geometry: ScreenGeometry?
+        var batching = false
+        defer { if batching { endBatch() } }
         while let item = stack.popLast() {
+            if item.replayed, !batching {
+                batching = true
+                beginBatch()
+            }
             if item.replayed, !countReplayedKey(item.level) {
                 failed = true
                 break
@@ -304,14 +329,14 @@ final class TerminalTextView: NSTextView {
             return outcome
         }
         showSelection(result.selections)
-        if !result.edits.isEmpty { refreshHighlight() }
+        if !result.edits.isEmpty && !isBatching { refreshHighlight() }
         for effect in result.effects {
             switch effect {
             case .scroll(let request):
                 scroll(request)
                 outcome.changedView = true
-            case .openCommandLine(let prompt, _):
-                if !replayed { openCommandLine(prompt) }
+            case .openCommandLine(let prompt, let prefill):
+                if !replayed { openCommandLine(prompt, prefill: prefill) }
             case .undo(let count): undoSteps(count, redo: false)
             case .redo(let count): undoSteps(count, redo: true)
             case .replay(let keys): outcome.replay = keys
@@ -327,14 +352,14 @@ final class TerminalTextView: NSTextView {
             }
         }
         if isInserting { beginUndoGroup() }
-        revealCursor()
+        if !isBatching { revealCursor() }
         syncMode()
         if recordingBefore != store.session.recording { modeDidChange?() }
         return outcome
     }
 
-    private func openCommandLine(_ prompt: Character) {
-        if prompt == ":" { commandRequested?() } else { searchRequested?(prompt) }
+    private func openCommandLine(_ prompt: Character, prefill: String) {
+        if prompt == ":" { commandRequested?(prefill) } else { searchRequested?(prompt) }
     }
 
     // MARK: Applying results
@@ -351,10 +376,12 @@ final class TerminalTextView: NSTextView {
             guard shouldChangeText(in: edit.range, replacementString: edit.replacement) else {
                 return false
             }
+            let patched = cachedBuffer?.applying(edit)
             textStorage?.replaceCharacters(
                 in: edit.range,
                 with: NSAttributedString(string: edit.replacement, attributes: typingAttributes)
             )
+            if patched?.length == textStorage?.length { cachedBuffer = patched }
             didChangeText()
         }
         return true
@@ -408,8 +435,15 @@ final class TerminalTextView: NSTextView {
 
     private func undoSteps(_ count: Int, redo: Bool) {
         endUndoGroup()
+        beginBatch()
+        defer { endBatch() }
         for _ in 0..<count where redo ? vimUndo.canRedo : vimUndo.canUndo {
             redo ? vimUndo.redo() : vimUndo.undo()
+        }
+        if batchMovedSelection {
+            batchMovedSelection = false
+            adoptCursor(selectedRange().location, in: currentBuffer())
+            syncMode()
         }
     }
 
@@ -463,6 +497,8 @@ final class TerminalTextView: NSTextView {
 
     /// Plays `:normal` on its lines as `LineReplay` describes.
     private func runLines(_ replay: LineReplay) {
+        beginBatch()
+        defer { endBatch() }
         switch replay.lines {
         case .cursor:
             replayOnce(replay.keys)

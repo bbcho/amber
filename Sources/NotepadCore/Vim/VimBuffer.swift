@@ -34,6 +34,38 @@ public struct VimBuffer {
         lineStarts = starts
     }
 
+    private init(text: NSString, lineStarts: [Int]) {
+        self.text = text
+        self.lineStarts = lineStarts
+    }
+
+    /// The buffer of the text after `edit`. Only the lines the edit touches are scanned, plus
+    /// the line before it, which a carriage return there may join to a new line feed; the
+    /// later lines keep their breaks and move by the edit's length change.
+    public func applying(_ edit: TextEdit) -> VimBuffer {
+        let start = edit.range.location
+        let end = NSMaxRange(edit.range)
+        let changed = text.mutableCopy() as! NSMutableString
+        changed.replaceCharacters(in: edit.range, with: edit.replacement)
+        let delta = changed.length - length
+        let firstLine = lineIndex(of: max(start - 1, 0))
+        let lastLine = lineIndex(of: end)
+        let regionStart = lineStarts[firstLine]
+        let regionEnd = NSMaxRange(lineRange(at: lastLine)) + delta
+        var starts = Array(lineStarts[..<firstLine])
+        var position = regionStart
+        while position < regionEnd {
+            starts.append(position)
+            var next = 0
+            changed.getLineStart(nil, end: &next, contentsEnd: nil,
+                                 for: NSRange(location: position, length: 0))
+            position = next
+        }
+        guard position == regionEnd else { return VimBuffer(changed) }
+        starts += lineStarts[(lastLine + 1)...].map { $0 + delta }
+        return VimBuffer(text: changed, lineStarts: changed.length == 0 ? [0] : starts)
+    }
+
     public var length: Int { text.length }
     public var lineCount: Int { lineStarts.count }
 

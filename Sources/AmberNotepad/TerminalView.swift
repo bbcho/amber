@@ -106,10 +106,7 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         commandLine.setAccessibilityLabel("Vim command")
         screen.addSubview(commandLine)
         screen.addSubview(texture)
-        textView.commandRequested = { [weak self] in
-            guard let self else { return }
-            self.beginCommand(prefill: self.textView.commandPrefill)
-        }
+        textView.commandRequested = { [weak self] in self?.beginCommand(prefill: $0) }
         textView.searchRequested = { [weak self] prompt in self?.beginCommand(prompt: prompt) }
         gutter.textView = textView
         gutter.isHidden = true

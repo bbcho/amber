@@ -108,4 +108,24 @@ final class VimSpeedTests: XCTestCase {
         XCTAssertEqual((driver.text as String).components(separatedBy: "bar").count - 1, 10_000)
         XCTAssertLessThan(seconds, 0.25)
     }
+
+    func test_following_ten_thousand_marked_lines_through_an_edit_each_takes_under_one_second() {
+        let lines = Array(stride(from: 0, to: 20_000, by: 2))
+        let text = NSMutableString(string: megabyte)
+        var marks = ExLineMarks(lines: lines, in: VimBuffer(text))
+        var visited = 0
+        let start = Date()
+        while let offset = marks.next() {
+            let range = NSRange(location: offset, length: 0)
+            let edit = TextEdit(range: range, replacement: "x")
+            marks.update(after: edit, in: text)
+            text.replaceCharacters(in: range, with: "x")
+            visited += 1
+        }
+        let seconds = Date().timeIntervalSince(start)
+
+        report([("ExLineMarks 10,000 edits", seconds)])
+        XCTAssertEqual(visited, 10_000)
+        XCTAssertLessThan(seconds, 1)
+    }
 }

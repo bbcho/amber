@@ -104,7 +104,9 @@ final class VimMotionTests: XCTestCase {
         assertVim(text, "3w", "abcひらがなdef |カタカナ漢字 x")
         assertVim(text, "4w", "abcひらがなdef カタカナ|漢字 x")
         assertVim(text, "5w", "abcひらがなdef カタカナ漢字 |x")
-        assertVim("abcひらがなdef カタカナ漢字 |x", "3b", "abcひらがな|def カタカナ漢字 x")
+        assertVim(
+            "abcひらがなdef カタカナ漢字 |x", "3b", "abcひらがな|def カタカナ漢字 x"
+        )
         assertVim(text, "3e", "abcひらがなde|f カタカナ漢字 x")
     }
 

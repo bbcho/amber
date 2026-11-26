@@ -129,6 +129,9 @@ over 1 MB takes about 0.1 s in the engine but about 0.28 s in a window, where Ap
 out the replaced text; and `(` or `)` across 1 MB with no sentence end scans the whole text
 (about 0.1 s in a release build).
 
+A replay of many edits (`:g/foo/normal Ax` over 10,000 lines of 1 MB) takes about 4.3 s in a
+debug build, and its undo about 0.85 s.
+
 ## Colon commands
 
 Press `:` in Normal mode, enter a command, and press Return. Escape cancels the command line.

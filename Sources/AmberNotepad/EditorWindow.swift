@@ -55,6 +55,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         terminal.textView.store = self.vimSession
         terminal.applyDisplayOptions()
         terminal.textView.delegate = self
+        terminal.textView.batchChangedText = { [weak self] in self?.textChanged() }
         terminal.textView.modeDidChange = { [weak self] in self?.updateStatus() }
         terminal.textView.statusMessage = { [weak self] in self?.showCommandMessage($0) }
         terminal.completeCommand = { [weak self] input in
@@ -100,9 +101,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
                 undo?.registerUndo(withTarget: self) { $0.reloadWasUndone() }
                 undo?.endUndoGrouping()
                 autosaveTimer?.invalidate()
-                if terminal.isShowingMarkdown {
-                    terminal.updateMarkdown(MarkdownRenderer.render(session.file.text))
-                }
+                refreshMarkdown()
                 saveMessage = "Reloaded: the file changed outside Amber"
             case .conflict:
                 saveMessage = "File changed outside this app. Draft kept. Press ⌘S to resolve."
@@ -168,6 +167,12 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
             terminal.showMarkdown(MarkdownRenderer.render(terminal.textView.string))
         }
         updateStatus()
+    }
+
+    /// Renders the source again into the preview, if it is showing, keeping its scroll position.
+    func refreshMarkdown() {
+        guard terminal.isShowingMarkdown else { return }
+        terminal.updateMarkdown(MarkdownRenderer.render(terminal.textView.string))
     }
 
     func showCommandMessage(_ message: String) {
@@ -276,6 +281,10 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) {
         commandMessage = nil
+        if !terminal.textView.isBatching { textChanged() }
+    }
+
+    private func textChanged() {
         session.updateText(terminal.textView.string)
         if !session.isDirty { autosaveHeld = false }
         saveMessage = "Saving…"
@@ -308,6 +317,7 @@ final class EditorWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
     }
 
     private func updateStatus() {
+        guard !terminal.textView.isBatching else { return }
         if let url = session.url, url != reportedURL {
             reportedURL = url
             onFileUsed?(self, url)

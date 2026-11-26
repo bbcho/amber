@@ -19,6 +19,10 @@ extension TerminalTextView {
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
         defer { cursorDidMove() }
         guard vimEnabled, !applyingState, !stillSelecting, !hasMarkedText() else { return }
+        guard !isBatching else {
+            batchMovedSelection = true
+            return
+        }
         adoptSelection(selectedRange())
     }
 
@@ -33,9 +37,9 @@ extension TerminalTextView {
         syncMode()
     }
 
-    private func adoptCursor(_ location: Int, in buffer: VimBuffer) {
+    func adoptCursor(_ location: Int, in buffer: VimBuffer) {
         if vim.mode.isVisual || vim.mode == .operatorPending { setModeKeepingCursor(.normal) }
-        vim.pendingKeys = []
+        clearPendingCommand()
         vim.desiredColumn = nil
         let offset = min(location, buffer.length)
         if isInserting {

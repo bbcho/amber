@@ -143,6 +143,47 @@ final class VimAdapterTests: XCTestCase {
         }
     }
 
+    func test_a_text_command_run_from_the_preview_rerenders_the_preview() async throws {
+        try await MainActor.run {
+            let (app, directory, editor) = try workspace("hello\n\nworld")
+            defer { cleanup(app, directory) }
+            editor.toggleMarkdown()
+            XCTAssertTrue(editor.isShowingMarkdown)
+
+            XCTAssertTrue(app.execute("%s/hello/goodbye/", in: editor))
+
+            XCTAssertEqual(editor.terminal.textView.string, "goodbye\n\nworld")
+            XCTAssertTrue(editor.terminal.preview.string.contains("goodbye"))
+            XCTAssertFalse(editor.terminal.preview.string.contains("hello"))
+        }
+    }
+
+    func test_autosave_and_the_dirty_mark_follow_a_long_replay_once_it_ends() async throws {
+        try await MainActor.run {
+            let lines = (0..<300).map { "foo \($0)" }
+            let (app, directory, editor) = try workspace(
+                lines.joined(separator: "\n"), name: "note.md"
+            )
+            defer { cleanup(app, directory) }
+            submit(":g/foo/normal Ax", in: editor)
+            let edited = lines.map { $0 + "x" }.joined(separator: "\n")
+            XCTAssertEqual(editor.terminal.textView.string, edited)
+            XCTAssertTrue(editor.hasUnsavedChanges)
+            XCTAssertTrue(editor.terminal.filename.stringValue.hasSuffix(" *"))
+
+            RunLoop.main.run(until: Date().addingTimeInterval(0.9))
+
+            let saved = try String(contentsOf: directory.appendingPathComponent("note.md"))
+            XCTAssertEqual(saved, edited)
+            XCTAssertFalse(editor.hasUnsavedChanges)
+            XCTAssertFalse(editor.terminal.filename.stringValue.hasSuffix(" *"))
+
+            press(editor.terminal.textView, "u")
+            XCTAssertEqual(editor.terminal.textView.string, lines.joined(separator: "\n"))
+            XCTAssertTrue(editor.hasUnsavedChanges)
+        }
+    }
+
     func test_text_committed_through_insert_text_reaches_the_dot_command() async throws {
         try await MainActor.run {
             let (app, directory, editor) = try workspace("ab")
@@ -498,6 +539,23 @@ final class VimAdapterTests: XCTestCase {
 
             XCTAssertEqual(view.selectedRange(), NSRange(location: 4, length: 0))
             XCTAssertEqual(view.mode, .normal)
+        }
+    }
+
+    func test_a_click_drops_a_count_and_a_register_typed_before_it() async throws {
+        try await MainActor.run {
+            let view = TerminalTextView(frame: .zero)
+            view.string = "one\ntwo\nthree\nfour"
+            press(view, "3")
+            press(view, "\"")
+            press(view, "a")
+
+            view.setSelectedRange(NSRange(location: 0, length: 0))
+            press(view, "j")
+
+            XCTAssertEqual(view.selectedRange(), NSRange(location: 4, length: 0))
+            XCTAssertNil(view.vim.register)
+            XCTAssertNil(view.vim.count)
         }
     }
 
