@@ -9,6 +9,8 @@ let package = Package(
         .target(name: "NotepadCore"),
         .executableTarget(name: "AmberNotepad", dependencies: ["NotepadCore"]),
         .testTarget(name: "NotepadCoreTests", dependencies: ["NotepadCore"]),
-        .testTarget(name: "AmberNotepadTests", dependencies: ["AmberNotepad"])
+        .testTarget(name: "AmberNotepadTests", dependencies: ["AmberNotepad"]),
+        .testTarget(name: "VimComparisonTests", dependencies: ["NotepadCore"],
+                    exclude: ["KnownDifferences.md"])
     ]
 )

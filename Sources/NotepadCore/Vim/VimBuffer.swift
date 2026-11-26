@@ -70,6 +70,12 @@ public struct VimBuffer {
     public func nextGrapheme(after offset: Int) -> Int? {
         guard offset >= 0, offset < length else { return nil }
         if isCRLF(at: offset) { return offset + 2 }
+        // Nothing below U+0300 extends a cluster, so an ASCII character followed by one is
+        // a whole cluster. This keeps walks along a very long line fast.
+        if text.character(at: offset) < 0x80,
+           offset + 1 == length || text.character(at: offset + 1) < 0x300 {
+            return offset + 1
+        }
         return NSMaxRange(text.rangeOfComposedCharacterSequence(at: offset))
     }
 
@@ -105,12 +111,32 @@ public struct VimBuffer {
         let line = lineIndex(of: offset)
         var column = 0
         var position = lineRange(at: line).location
-        while position < offset, let next = nextGrapheme(after: position) {
-            column = advance(column, past: position, tabstop: tabstop)
-            position = next
+        var chunk = [unichar](repeating: 0, count: Self.chunkLength + 1)
+        while position < offset {
+            // Printable ASCII and tabs are one grapheme each unless a combining character
+            // follows, so they are counted from a copied chunk; anything else takes the
+            // grapheme walk, one cluster at a time.
+            let wanted = min(Self.chunkLength, offset - position)
+            let available = min(wanted + 1, length - position)
+            text.getCharacters(&chunk, range: NSRange(location: position, length: available))
+            var index = 0
+            while index < wanted, chunk[index] == 0x09 || (0x20..<0x80).contains(chunk[index]),
+                  index + 1 == available || chunk[index + 1] < 0x300 {
+                column = chunk[index] == 0x09 ? (column / tabstop + 1) * tabstop : column + 1
+                index += 1
+            }
+            position += index
+            if index < wanted, let next = nextGrapheme(after: position) {
+                column = advance(column, past: position, tabstop: tabstop)
+                position = next
+            } else if index < wanted {
+                break
+            }
         }
         return column
     }
+
+    private static let chunkLength = 256
 
     /// The offset of the grapheme that covers `displayColumn` on `line`, or the end of the
     /// line's content when the line is shorter.

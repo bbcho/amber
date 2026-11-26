@@ -93,6 +93,21 @@ final class VimBufferTests: XCTestCase {
         XCTAssertEqual(b.displayColumn(of: 8, tabstop: 4), 2)
     }
 
+    func test_a_combining_accent_after_an_ascii_letter_adds_no_column() {
+        let b = buffer("ab\te\u{301}x")
+
+        XCTAssertEqual(b.displayColumn(of: 5, tabstop: 4), 5)
+        XCTAssertEqual(b.displayColumn(of: 3, tabstop: 4), 4)
+    }
+
+    func test_the_column_after_a_run_longer_than_a_chunk_counts_every_character() {
+        let b = buffer(String(repeating: "a", count: 300) + "\tb\u{1F600}c")
+
+        XCTAssertEqual(b.displayColumn(of: 301, tabstop: 4), 304)
+        XCTAssertEqual(b.displayColumn(of: 302, tabstop: 4), 305)
+        XCTAssertEqual(b.displayColumn(of: 304, tabstop: 4), 306)
+    }
+
     func test_offset_for_a_column_lands_on_the_grapheme_covering_it() {
         let b = buffer("a\tbc\n\u{1F600}x")
         XCTAssertEqual(b.offset(line: 0, displayColumn: 0, tabstop: 4), 0)

@@ -404,8 +404,8 @@ enum Motions {
                                  _ context: MotionContext) -> Outcome {
         let b = context.buffer
         let tabstop = context.options.tabstop
-        let want = context.desiredColumn ?? b.displayColumn(of: cursor, tabstop: tabstop)
         return lineMove(cursor, delta, b).map { line in
+            let want = context.desiredColumn ?? b.displayColumn(of: cursor, tabstop: tabstop)
             let offset = b.offset(line: line, displayColumn: want, tabstop: tabstop)
             return MotionTarget(context.visual ? offset : normalPosition(offset, in: b),
                                 .linewise, desiredColumn: want)

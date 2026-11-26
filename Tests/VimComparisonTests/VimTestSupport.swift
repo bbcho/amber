@@ -1,0 +1,1 @@
+../NotepadCoreTests/Vim/VimTestSupport.swift
