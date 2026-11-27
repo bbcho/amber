@@ -7,7 +7,10 @@ let package = Package(
     products: [.executable(name: "AmberNotepad", targets: ["AmberNotepad"])],
     targets: [
         .target(name: "NotepadCore"),
-        .executableTarget(name: "AmberNotepad", dependencies: ["NotepadCore"]),
+        .executableTarget(
+            name: "AmberNotepad", dependencies: ["NotepadCore"],
+            resources: [.copy("Resources/Mermaid")]
+        ),
         .testTarget(name: "NotepadCoreTests", dependencies: ["NotepadCore"]),
         .testTarget(name: "AmberNotepadTests", dependencies: ["AmberNotepad"]),
         .testTarget(name: "VimComparisonTests", dependencies: ["NotepadCore"],

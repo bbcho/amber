@@ -238,6 +238,12 @@ bottom, and counts such as `5j` work. `:` opens the command line, so `:mm` switc
 restoring your cursor and scroll position. Links are styled but not clickable, and images show
 their alt text.
 
+A fenced block whose language is `mermaid` shows the drawn diagram instead of its source.
+It first appears as a box labeled "rendering diagram…", then is replaced by the image
+without moving the view; a diagram Mermaid rejects shows its error and your source. Drawing
+runs offline in a hidden web view with the bundled Mermaid 12.3.0 and never uses the network.
+See `THIRD_PARTY_NOTICES.md`.
+
 ## Launch with a keyboard shortcut
 
 Install `Amber.app` in Applications. In Apple's Shortcuts app, create a shortcut named

@@ -5,6 +5,7 @@ import NotepadCore
 @MainActor
 final class MarkdownPreviewView: NSTextView {
     var commandRequested: (() -> Void)?
+    var diagrams = MermaidRenderer.shared
     private var vim = VimWindowState()
     private var session = VimSession()
 

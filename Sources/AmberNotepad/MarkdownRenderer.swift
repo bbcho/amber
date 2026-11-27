@@ -37,7 +37,9 @@ enum MarkdownRenderer {
     private static let columnGap: CGFloat = 24
     private static let rule = String(repeating: "─", count: 40)
 
-    static func render(_ source: String) -> NSAttributedString {
+    static func render(
+        _ source: String, diagrams: MermaidRenderer = .shared
+    ) -> NSAttributedString {
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible
         )
@@ -46,7 +48,7 @@ enum MarkdownRenderer {
                 string: source, attributes: attributes(for: [], run: nil, decoration: nil)
             )
         }
-        var renderer = Renderer()
+        var renderer = Renderer(diagrams: diagrams)
         for run in parsed.runs {
             renderer.append(String(parsed[run.range].characters), run: run)
         }
@@ -62,6 +64,7 @@ enum MarkdownRenderer {
             var cellWidths: [Int: [Int: CGFloat]] = [:]
         }
 
+        let diagrams: MermaidRenderer
         private let output = NSMutableAttributedString()
         private var previousBlocks: [PresentationIntent.IntentType] = []
         private var markedItems = Set<Int>()
@@ -82,11 +85,26 @@ enum MarkdownRenderer {
             case .codeBlock: if text.hasSuffix("\n") { text.removeLast() }
             default: break
             }
-            if isNewBlock { text = marker(for: blocks) + text }
-            let piece = NSAttributedString(string: text, attributes: styled)
+            let diagram = diagramPiece(blocks, text: text, attributes: styled)
+            let piece = NSMutableAttributedString(
+                string: isNewBlock ? marker(for: blocks) : "", attributes: styled
+            )
+            piece.append(diagram ?? NSAttributedString(string: text, attributes: styled))
             output.append(piece)
             recordTableCell(blocks, width: piece.size().width)
             previousBlocks = blocks
+        }
+
+        private func diagramPiece(
+            _ blocks: [PresentationIntent.IntentType], text: String,
+            attributes: [NSAttributedString.Key: Any]
+        ) -> NSAttributedString? {
+            guard case .codeBlock(let hint)? = blocks.first?.kind, hint == "mermaid" else {
+                return nil
+            }
+            return MarkdownRenderer.diagramText(
+                source: text, outcome: diagrams.cachedOutcome(for: text), attributes: attributes
+            )
         }
 
         /// Applies each table's column tab stops, sized to fit its widest cells.
@@ -120,7 +138,8 @@ enum MarkdownRenderer {
             let column = cell(of: blocks)?.column ?? 0
             let previousColumn = cell(of: previousBlocks)?.column ?? 0
             if output.length > 0 {
-                let previous = output.attributes(at: output.length - 1, effectiveRange: nil)
+                var previous = output.attributes(at: output.length - 1, effectiveRange: nil)
+                previous[.mermaidSource] = nil
                 if let row = cell(of: blocks)?.row, row == cell(of: previousBlocks)?.row {
                     let tabs = String(repeating: "\t", count: max(column - previousColumn, 1))
                     output.append(NSAttributedString(string: tabs, attributes: previous))

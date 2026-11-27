@@ -307,6 +307,7 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         dismissCommandLine()
         isShowingMarkdown = true
         preview.textStorage?.setAttributedString(text)
+        preview.startDiagrams()
         scroll.isHidden = true
         previewScroll.isHidden = false
         needsLayout = true
@@ -383,6 +384,7 @@ final class TerminalView: NSView, NSTextFieldDelegate {
         let bottom = max(preview.frame.height - clip.bounds.height, 0)
         clip.scroll(to: NSPoint(x: origin.x, y: wasAtBottom ? bottom : min(origin.y, bottom)))
         previewScroll.reflectScrolledClipView(clip)
+        preview.startDiagrams()
     }
 
     /// The last line holding text: a final line break leaves an empty line after it.
